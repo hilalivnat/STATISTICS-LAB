@@ -1,0 +1,144 @@
+---
+title: "Exercise 1"
+author: "Roi Aharon, Hila Livnat, Daniel Erez"
+date: "27 March 2025"
+output:
+html_document:
+code_folding: hide
+editor_options: 
+markdown: 
+wrap: sentence
+---
+
+```{r}
+install.packages("ggplot2")
+install.packages("GGally")
+library(ggplot2)
+library(GGally)
+```
+
+
+```{r}
+dir_name <- "/Users/danielerez/data"
+# file_A <- sprintf("%s/%s", dir_name, "chr1_str_10M_30M.rda")
+# file_B <- sprintf("%s/%s", dir_name, "chr1_str_30M_50M.rda")
+file_C <- sprintf("%s/%s", "data", "chr1_str_50M_70M.rda")
+
+# data_A = load(file_A)
+# print(data_A[1])
+# data_B = load(file_B)
+data_C = load(file_C)
+# region_line_A <- strsplit(chr1_str_10M_30M, split = "")[[1]]
+# region_line_B <- strsplit(chr1_str_30M_50M, split = "")[[1]]
+region_line_C <- strsplit(chr1_str_50M_70M, split = "")[[1]]
+```
+
+
+```{r}
+# table(region_line_A)
+```
+
+
+```{r}
+# table(region_line_B)
+```
+
+
+```{r}
+table(region_line_C)
+```
+
+
+```{r}
+# regionA_factored = factor(region_line_A, c("A","T","C","G"))
+# regionB_factored = factor(region_line_B, c("A","T","C","G"))
+regionC_factored = factor(region_line_C, c("A","T","C","G"))
+round(table(regionC_factored), digits = -4) /10^6
+```
+
+```{r}
+
+# Receives region and cell size and summarizes number of bases in each cell
+cell_counts = function(region, cell_size = 1000) {
+  print(region)
+  n = length(region)
+  n_cells = ceiling(n / cell_size)
+  
+  res = data.frame(
+    cell =  integer(n_cells),
+    A = integer(n_cells),
+    T = integer(n_cells),
+    C = integer(n_cells),
+    G = integer(n_cells)
+  )
+  
+  
+  # counting the number of appearances
+  for (i in 1:n_cells) {
+    start_idx = (i-1) * cell_size + 1
+    end_idx = min(i * cell_size, n)
+    cell_segment = region[start_idx:end_idx]
+    base_counts = table(cell_segment)
+    
+    res$cell[i] = i
+    res$A[i] <- ifelse("A" %in% names(base_counts), base_counts["A"], 0)
+    res$T[i] <- ifelse("T" %in% names(base_counts), base_counts["T"], 0)
+    res$C[i] <- ifelse("C" %in% names(base_counts), base_counts["C"], 0)
+    res$G[i] <- ifelse("G" %in% names(base_counts), base_counts["G"], 0)
+  }
+  return (res)
+} 
+```
+
+```{r}
+counts_C <- cell_counts(regionC_factored, cell_size = 1000)
+# print(counts_C)
+```
+```{r}
+# histogram
+#create historgram dist for each chromozon
+bin_size <- 1000
+hist_colors <- c("red", "blue", "green", "purple")
+chroms <- c("A","T", "C", "G")
+for (j in seq_along(chroms)){
+  N = length(regionC_factored)
+  n_bins = ceiling(N/bin_size)
+  C_count = numeric(N/bin_size)
+  for (i in 1:n_bins){
+    start_bin = 1+ (i-1)*bin_size
+    end_bin = i*bin_size
+    C_count[i] = sum(regionC_factored[start_bin:end_bin] ==chroms[j])
+  }
+  
+  hist(C_count,
+       main = paste("Distribution of", chroms[j], "per", bin_size, "bases"),
+       xlab = paste("Count of", chroms[j]),
+       ylab = "Frequency",
+       col = hist_colors[j],
+       border = "darkblue"
+      )
+  rug(C_count, color="orange")
+}
+```
+
+```{r}
+# Plot all bases together
+matplot(counts_C$cell, counts_C[, c("A", "T", "C", "G")], type = "l", lty = 1, lwd = 2,
+        col = hist_colors,
+        xlab = "Chromosome Position (Cell Index)",
+        ylab = "Base Frequency",
+        main = "Base Frequencies Across Chromosome")
+
+legend("topright", legend = c("A", "T", "C", "G"),
+       col = hist_colors, lty = 1, lwd = 2)
+```
+```{r}
+base_df <- counts_C[, chroms]
+
+# Scatterplot matrix for all pairs
+ggpairs(base_df,
+        title = "Scatter Plots of Base Pair Frequencies",
+        upper = list(continuous = wrap("points", alpha = 0.3)),
+        lower = list(continuous = wrap("smooth", method = "loess")),
+        diag = list(continuous = wrap("densityDiag")))
+```
