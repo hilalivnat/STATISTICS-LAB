@@ -17,50 +17,39 @@ library(ggplot2)
 library(GGally)
 ```
 
+**Section A – File Reading:**
 
 ```{r}
+#Qa
 dir_name <- "/Users/danielerez/data"
-# file_A <- sprintf("%s/%s", dir_name, "chr1_str_10M_30M.rda")
-# file_B <- sprintf("%s/%s", dir_name, "chr1_str_30M_50M.rda")
 file_C <- sprintf("%s/%s", "data", "chr1_str_50M_70M.rda")
-
-# data_A = load(file_A)
-# print(data_A[1])
-# data_B = load(file_B)
 data_C = load(file_C)
-# region_line_A <- strsplit(chr1_str_10M_30M, split = "")[[1]]
-# region_line_B <- strsplit(chr1_str_30M_50M, split = "")[[1]]
 region_line_C <- strsplit(chr1_str_50M_70M, split = "")[[1]]
-```
+bin_size <- 2000
+regionC_factored = factor(region_line_C, c("A","T","C","G"))
+counts_C <- cell_counts(regionC_factored, cell_size = bin_size)
 
+
+```
 
 ```{r}
-# table(region_line_A)
+# table(region_line_C)
 ```
-
-
-```{r}
-# table(region_line_B)
-```
-
-
-```{r}
-table(region_line_C)
-```
-
 
 ```{r}
 # regionA_factored = factor(region_line_A, c("A","T","C","G"))
 # regionB_factored = factor(region_line_B, c("A","T","C","G"))
-regionC_factored = factor(region_line_C, c("A","T","C","G"))
-round(table(regionC_factored), digits = -4) /10^6
+# round(table(regionC_factored), digits = -4) /10^6
 ```
 
-```{r}
+**Section B – A function that receives a genomic region and calculates the number of occurrences of each base in that region:**
 
+A function that takes a region in the genome and calculates the number of appearances of each base (A, T, C, G) in that region.
+
+```{r}
+#Q b
 # Receives region and cell size and summarizes number of bases in each cell
-cell_counts = function(region, cell_size = 1000) {
-  print(region)
+cell_counts = function(region, cell_size = 2000) {
   n = length(region)
   n_cells = ceiling(n / cell_size)
   
@@ -91,13 +80,16 @@ cell_counts = function(region, cell_size = 1000) {
 ```
 
 ```{r}
-counts_C <- cell_counts(regionC_factored, cell_size = 1000)
-# print(counts_C)
 ```
+
+**Section C – In each histogram, you can see the distribution of each of the bases in the chromosome:**
+
+You can see that A and T are relatively close to a normal distribution, while the others look like a normal distribution with a right-hand tail.
+
 ```{r}
+#Q c
 # histogram
 #create historgram dist for each chromozon
-bin_size <- 1000
 hist_colors <- c("red", "blue", "green", "purple")
 chroms <- c("A","T", "C", "G")
 for (j in seq_along(chroms)){
@@ -121,24 +113,154 @@ for (j in seq_along(chroms)){
 }
 ```
 
-```{r}
-# Plot all bases together
-matplot(counts_C$cell, counts_C[, c("A", "T", "C", "G")], type = "l", lty = 1, lwd = 2,
-        col = hist_colors,
-        xlab = "Chromosome Position (Cell Index)",
-        ylab = "Base Frequency",
-        main = "Base Frequencies Across Chromosome")
+**Section D –**
 
-legend("topright", legend = c("A", "T", "C", "G"),
-       col = hist_colors, lty = 1, lwd = 2)
+In the above plots, we see the frequency of specific bases in cells of size 2000 relative to their position on the chromosome. You can observe that the lines follow the same trend line (the dashed black line). There's a slight increase or decrease around cell 2000, but overall, the trend is consistent across all lines, and the frequency forms a sort of straight line.
+
+```{r}
+#Q d
+# Set up 2x2 plotting area
+# ylim_range <- c(0, 1)
+par(mfrow = c(2, 2))
+# 
+# # Plot A
+# plot(counts_C$cell, counts_C$A/bin_size, type = "l", lty = 1, lwd = 2,
+#      col = hist_colors[1],
+#      xlab = "Chromosome Position (Cell Index)",
+#      ylab = "Frequency",
+#      main = "Frequency of A",
+#      ylim = ylim_range)
+# 
+# # Plot T
+# plot(counts_C$cell, counts_C$T/bin_size, type = "l", lty = 1, lwd = 2,
+#      col = hist_colors[2],
+#      xlab = "Chromosome Position (Cell Index)",
+#      ylab = "Frequency",
+#      main = "Frequency of T", 
+#      ylim = ylim_range)
+# 
+# # Plot C
+# plot(counts_C$cell, counts_C$C/bin_size, type = "l", lty = 1, lwd = 2,
+#      col = hist_colors[3],
+#      xlab = "Chromosome Position (Cell Index)",
+#      ylab = "Frequency",
+#      main = "Frequency of C",
+#      ylim = ylim_range)
+# 
+# # Plot G
+# plot(counts_C$cell, counts_C$G/bin_size, type = "l", lty = 1, lwd = 2,
+#      col = hist_colors[4],
+#      xlab = "Chromosome Position (Cell Index)",
+#      ylab = "Frequency",
+#      main = "Frequency of G", 
+#      ylim = ylim_range)
+# 
+
+# Create boxplot for base frequencies across all cells
+# boxplot(counts_C[, c("A", "T", "C", "G")],
+#         col = hist_colors,
+#         ylab = "Frequency",
+#         xlab = "Base",
+#         main = "Distribution of Base Frequencies Across Cells")
+
+plot_base_frequency <- function(base, data = counts_C, color = "blue", trend_col = "black") {
+  # Check if the base column exists
+  if (!(base %in% names(data))) {
+    stop(paste("Base", base, "not found in data"))
+  }
+  
+  # Extract cell positions and base frequencies
+  x <- data$cell
+  y <- data[[base]]
+  
+  # Plot raw frequency data
+  plot(x, y, type = "l", lwd = 2,
+       col = color,
+       xlab = "Cell Number (Index)",
+       ylab = paste("Frequency of", base),
+       main = paste("Frequency of", base, "Across Cells"))
+  
+  # Add loess-smoothed trend line
+  trend <- loess(y ~ x, span = 0.1)  # adjust `span` for more/less smoothing
+  lines(x, predict(trend), col = trend_col, lwd = 2, lty = 2)
+}
+
+for (j in seq_along(chroms)){
+  plot_base_frequency(chroms[j], color = hist_colors[j], trend_col = "black")
+
+}
+
 ```
-```{r}
-base_df <- counts_C[, chroms]
 
-# Scatterplot matrix for all pairs
-ggpairs(base_df,
-        title = "Scatter Plots of Base Pair Frequencies",
-        upper = list(continuous = wrap("points", alpha = 0.3)),
-        lower = list(continuous = wrap("smooth", method = "loess")),
-        diag = list(continuous = wrap("densityDiag")))
+**Section E – In the following plots, we can see the frequency for every pair of bases:**
+
+While the general trend shows that as the quantity of one base increases, the quantity of the other decreases, when comparing A to T and C to G, we observe something interesting. For these two pairs, as the amount of one base increases, so does the amount of the other. The cells where the quantities of C and G are relatively high are mostly located in the two central quarters of the chromosome. The cells with relatively high quantities of A and T are found in the first three quarters of the chromosome and almost not at the end.
+
+```{r}
+# # Plot all bases together
+# matplot(counts_C$cell, counts_C[, c("A", "T", "C", "G")], type = "l", lty = 1, lwd = 2,
+#         col = hist_colors,
+#         xlab = "Chromosome Position (Cell Index)",
+#         ylab = "Base Frequency",
+#         main = "Base Frequencies Across Chromosome")
+# 
+# legend("topright", legend = c("A", "T", "C", "G"),
+#        col = hist_colors, lty = 1, lwd = 2)
+# Set up 2x2 plotting area
+# Base names and number of unique combinations
+bases <- c("A", "C", "G", "T")
+
+# Set up plotting area: 2 rows x 3 columns
+par(mfrow = c(2, 3))
+
+# Loop over unique base combinations
+for (i in 1:3) {
+  for (j in (i+1):4) {
+    plot(counts_C[[bases[i]]], counts_C[[bases[j]]],
+         pch = 20, cex = 0.5,
+         xlab = paste("Freq of", bases[i]),
+         ylab = paste("Freq of", bases[j]),
+         main = paste(bases[i], "vs", bases[j]))
+  }
+}
+
+# Assuming you already ran this:
+threshold <- 0.3
+# Get high-GC cell rows
+high_GC <- counts_C[counts_C$G/bin_size  > threshold & counts_C$C/bin_size > threshold, ]
+
+high_AT<- counts_C[counts_C$A/bin_size > threshold & counts_C$T/bin_size > threshold, ]
+
+print(high_AT)
+# # Loop through each high-GC cell and print the sequence
+# for (i in seq_len(nrow(high_GC))) {
+#   cell_index <- high_GC$cell[i]  # Get cell number (index)
+#   
+#   # Calculate start and end positions in chr22_line
+#   start_pos <- (cell_index - 1) * bin_size + 1
+#   end_pos <- min(cell_index * bin_size, length(region_line_C))  # Avoid overflow
+#   
+#   # Extract the sequence
+#   seq_segment <- region_line_C[start_pos:end_pos]
+#   
+#   # Print header and sequence
+#   cat(paste0("Cell ", cell_index, " (", start_pos, "-", end_pos, "):\n"))
+#   cat(paste(seq_segment, collapse = ""), "\n\n")
+# }
+
+
+```
+
+**Section F – According to the boxplot above, we would divide the groups as follows: {A, T} and {C, G}:**
+
+You can see that the frequency of the first group is much higher, but also with greater variance, while the frequency of the second group is lower, but with less variance. Therefore, we believe this is the logical grouping of bases that behave similarly.
+
+```{r}
+#Q f
+# Create boxplot for base frequencies across all cells
+boxplot(counts_C[, c("A", "T", "C", "G")],
+        col = hist_colors,
+        ylab = "Frequency",
+        xlab = "Base",
+        main = "Distribution of Base Frequencies Across Cells")
 ```
