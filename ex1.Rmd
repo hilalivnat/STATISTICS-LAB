@@ -194,7 +194,11 @@ for (j in seq_along(chroms)){
 
 **Section E – In the following plots, we can see the frequency for every pair of bases:**
 
-While the general trend shows that as the quantity of one base increases, the quantity of the other decreases, when comparing A to T and C to G, we observe something interesting. For these two pairs, as the amount of one base increases, so does the amount of the other. The cells where the quantities of C and G are relatively high are mostly located in the two central quarters of the chromosome. The cells with relatively high quantities of A and T are found in the first three quarters of the chromosome and almost not at the end.
+While the general trend shows that as the quantity of one base increases, the quantity of another decreases, there’s an interesting exception when comparing A to T and C to G. For these two pairs, as the amount of one base increases, so does the amount of the other. Cells with relatively high quantities of C and G are mostly located in the two central quarters of the chromosome, while cells with relatively high quantities of A and T are mainly found in the first three quarters and are almost entirely absent at the end of the chromosome.
+
+Additionally, we marked the top 0.1% most extreme outlier cells in red. When examining their locations, we found that across all plots, most of these cells are concentrated between approximately cell 1000 and cell 2000, and the final cell also appears in every graph. Upon printing these specific cells, we noticed they contain many missing values (NAs), suggesting that the outlier behavior likely stems from a lack of information about the bases.
+
+
 
 ```{r}
 # # Plot all bases together
@@ -210,45 +214,152 @@ While the general trend shows that as the quantity of one base increases, the qu
 # Base names and number of unique combinations
 bases <- c("A", "C", "G", "T")
 
+
+n_cells <- nrow(counts_C)
+divied_to = 4
+
+# Create a bin index from 1 to 10
+counts_C$cell_bin <- cut(counts_C$cell, breaks = divied_to, labels = FALSE)
+bin_colors <- rainbow(divied_to)
+
 # Set up plotting area: 2 rows x 3 columns
 par(mfrow = c(2, 3))
 
 # Loop over unique base combinations
 for (i in 1:3) {
   for (j in (i+1):4) {
-    plot(counts_C[[bases[i]]], counts_C[[bases[j]]],
+    x <- counts_C[[bases[i]]]
+    y <- counts_C[[bases[j]]]
+
+    # Calculate Mahalanobis distance
+    data_pair <- cbind(x, y)
+    md <- mahalanobis(data_pair, colMeans(data_pair), cov(data_pair))
+
+    # Define a cutoff for outliers (e.g. top 1%)
+    cutoff <- quantile(md, 0.999)
+    outlier_idx <- which(md > cutoff)
+
+    # Plot
+    plot(x, y,
+         # col = bin_colors[counts_C$cell_bin],
          pch = 20, cex = 0.5,
          xlab = paste("Freq of", bases[i]),
          ylab = paste("Freq of", bases[j]),
          main = paste(bases[i], "vs", bases[j]))
+
+    # Highlight outliers
+    points(x[outlier_idx], y[outlier_idx], col = "red", pch = 4, cex = 0.8)
+
+    # Extract cell numbers
+    outlier_cells <- counts_C$cell[outlier_idx]
+    print(paste("Outliers in", bases[i], "vs", bases[j], ":"))
+    print(outlier_cells)
   }
 }
 
-# Assuming you already ran this:
-threshold <- 0.3
-# Get high-GC cell rows
-high_GC <- counts_C[counts_C$G/bin_size  > threshold & counts_C$C/bin_size > threshold, ]
+# # Loop over unique base combinations
+# for (i in 1:3) {
+#   for (j in (i+1):4) {
+#     plot(counts_C[[bases[i]]], counts_C[[bases[j]]],
+#          col = bin_colors[counts_C$cell_bin],
+#          pch = 20, cex = 0.5,
+#          xlab = paste("Freq of", bases[i]),
+#          ylab = paste("Freq of", bases[j]),
+#          main = paste(bases[i], "vs", bases[j]))
+#   }
+# }
+# 
+# # Assuming you already ran this:
+# threshold <- 0.3
+# # Get high-GC cell rows
+# high_GC <- counts_C[counts_C$G/bin_size  > threshold & counts_C$C/bin_size > threshold, ]
+# 
+# high_AT<- counts_C[counts_C$A/bin_size > threshold & counts_C$T/bin_size > threshold, ]
+# 
+# print(high_AT)
+# # # Loop through each high-GC cell and print the sequence
+# # for (i in seq_len(nrow(high_GC))) {
+# #   cell_index <- high_GC$cell[i]  # Get cell number (index)
+# #   
+# #   # Calculate start and end positions in chr22_line
+# #   start_pos <- (cell_index - 1) * bin_size + 1
+# #   end_pos <- min(cell_index * bin_size, length(region_line_C))  # Avoid overflow
+# #   
+# #   # Extract the sequence
+# #   seq_segment <- region_line_C[start_pos:end_pos]
+# #   
+# #   # Print header and sequence
+# #   cat(paste0("Cell ", cell_index, " (", start_pos, "-", end_pos, "):\n"))
+# #   cat(paste(seq_segment, collapse = ""), "\n\n")
+# # }
+# 
+# # # Create a factor with range labels
+# # cut_ranges <- cut(counts_C$cell, breaks = 10)
+# # 
+# # # Print out the color mapping
+# # for (i in 1:10) {
+# #   cat(paste("Color", i, "=", bin_colors[i], "→ Cell range:", levels(cut_ranges)[i]), "\n")
+# # }
+# 
 
-high_AT<- counts_C[counts_C$A/bin_size > threshold & counts_C$T/bin_size > threshold, ]
-
-print(high_AT)
-# # Loop through each high-GC cell and print the sequence
-# for (i in seq_len(nrow(high_GC))) {
-#   cell_index <- high_GC$cell[i]  # Get cell number (index)
+```
+```{r}
+# n_bins = ceiling(N/bin_size)
+# let_count = matrix(nr = n_bins,nc = 5)
+# letters = c("A","C","G","T")
+# for (i in 1:n_bins){
+#   start_bin = 1+ (i-1)*bin_size
+#   end_bin = min(N-1, i*bin_size)
+#   if (i > 10000){
+#     print(start_bin)
+#     print(end_bin)
+#     print(N)
+#   }
+#   for (let in 1:4) {
+#     let_count[i,let] = sum(region_line_C[start_bin:end_bin] ==letters[let],na.rm=TRUE)
+#     
+#   }
+# }
+# par(mfcol = c(4,1),mar = c(1,0,0,0))
+# for (j in 1:4){
+#   plot((1:n_bins),
+#      let_count[,j]/bin_size,
+#      pch =20, 
+#      cex = 0.5, 
+#      xlab = "Genomic Position (bp)",
+#      ylab = paste(letters[j], " Content (%)"),
+#      main = paste("Percentage of ", letters[j], " Across Genome Bins"),
+#      xaxt = "n")  # hide default X-axis ticks
+# 
+#   # Set tick step to 1 kb
+#   tick_step <- 1e3  # 1000 bp
 #   
-#   # Calculate start and end positions in chr22_line
-#   start_pos <- (cell_index - 1) * bin_size + 1
-#   end_pos <- min(cell_index * bin_size, length(region_line_C))  # Avoid overflow
+#   # Add custom X-axis labels every 1 kb
+#   axis(1,
+#        at = seq(0, max(n_bins * bin_size), by = tick_step),
+#        labels = seq(0, max(n_bins * bin_size), by = tick_step))
 #   
-#   # Extract the sequence
-#   seq_segment <- region_line_C[start_pos:end_pos]
-#   
-#   # Print header and sequence
-#   cat(paste0("Cell ", cell_index, " (", start_pos, "-", end_pos, "):\n"))
-#   cat(paste(seq_segment, collapse = ""), "\n\n")
 # }
 
+```
+```{r}
+par(mfcol = c(4,1),mar = c(1,0,0,0))
+for (i in 1:4){
+  plot((1:n_bins)*bin_size,let_count[,i]/bin_size,pch =20, cex = 0.5, xlab = "Location")
+}
+```
 
+
+```{r}
+# Set up empty plot space
+plot(1:divied_to, rep(1, divied_to), type = "n", axes = FALSE, xlab = "", ylab = "",
+     main = "Color Legend: Cell Number Ranges")
+
+# Draw colored rectangles with text
+for (i in 1:10) {
+  rect(i - 0.4, 0.8, i + 0.4, 1.2, col = bin_colors[i], border = "black")
+  text(i, 0.6, labels = paste0("(", (i-1)*1000, "-", i*1000, "]"), cex = 0.8)
+}
 ```
 
 **Section F – According to the boxplot above, we would divide the groups as follows: {A, T} and {C, G}:**
