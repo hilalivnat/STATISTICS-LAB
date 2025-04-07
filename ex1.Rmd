@@ -1,6 +1,6 @@
 ---
 title: "Exercise 1"
-author: "Roi Aharon, Hila Livnat, Daniel Erez"
+author: "Roei Aharon, Hila Livnat, Daniel Erez"
 date: "27 March 2025"
 output:
 html_document:
