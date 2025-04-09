@@ -1,0 +1,450 @@
+---
+title: "Exercise 2"
+author: "Roei Aharon, Hila Livnat, Daniel Erez"
+date: "10 April 2025"
+output:
+  html_document:
+    code_folding: hide
+editor_options: 
+markdown: 
+wrap: sentence
+---
+
+# ============================================================================
+#                                (Assignment 2)
+# ============================================================================
+
+# --- 0. Setup: Load Libraries and Define Parameters ---
+# Ensure necessary packages are installed: install.packages(c("data.table", "tictoc", "MASS"))
+library(data.table)
+library(tictoc)
+library(MASS) # For fitdistr
+
+# --- Parameters ---
+# Define file path (based on Group C)
+reads_file <- 'TCGA-13-0723-10B_lib1_all_chr1.forward'
+
+# Check if file exists
+if (!file.exists(reads_file)) {
+  stop(paste("Error: Data file not found at path:", reads_file,
+             "\nPlease ensure the file exists and the path is correct OR gunzip if needed."))
+}
+
+# Define region for analysis
+beg_region <- 10000000 # Start at 10M
+end_region <- beg_region + 20000000 - 1 # 20M base region
+
+# Define bin size for Part B
+bin_size <- 10000
+
+# --- Load and Prepare Data ---
+cat("--- Reading and Preparing Data ---\n")
+chr1_reads <- fread(reads_file)
+colnames(chr1_reads) <- c("Chrom", "Loc", "FragLen")
+
+# Ensure data is sorted by location
+cat("Sorting data by location...\n")
+setorder(chr1_reads, Loc) # Use data.table's efficient sorting
+cat("Data loaded and sorted.\n\n")
+
+
+# ============================================================================
+#                    (Part A: Data Structure Change)
+# ============================================================================
+
+# --- A. Function for Coverage (Efficient 'while' loop version) ---
+cat("--- Section A: Initial Coverage Function (getReadLine) ---\n")
+
+getReadLine <- function(locations, beg_region, end_region) {
+  # Assumes 'locations' is a sorted numeric vector
+  N <- end_region - beg_region + 1
+  read_line <- numeric(N) # Initialize vector of zeros
+
+  # Find index of the first read at or after beg_region
+  first_read_index_candidates <- which(locations >= beg_region)
+
+  # Handle cases with no relevant reads
+  if (length(first_read_index_candidates) == 0) {
+    return(read_line)
+  }
+  first_read_index <- first_read_index_candidates[1]
+
+  r <- first_read_index
+  if (locations[r] > end_region) {
+     return(read_line) # First relevant read is already past the end
+  }
+
+  # Iterate only through reads within the region
+  while (r <= length(locations) && locations[r] <= end_region) {
+    pos_in_line <- locations[r] - beg_region + 1
+    read_line[pos_in_line] <- read_line[pos_in_line] + 1
+    r <- r + 1
+  }
+  return(read_line)
+}
+
+# Run and time the function
+tic("getReadLine execution")
+coverage_vector_A <- getReadLine(chr1_reads$Loc, beg_region, end_region)
+time_A <- toc(log = TRUE, quiet = TRUE)
+time_taken_A <- as.numeric(time_A$toc - time_A$tic)
+
+# Calculate total fragments
+total_fragments_A <- sum(coverage_vector_A)
+
+# Report results for Section A
+cat(sprintf("Function 'getReadLine' executed on region %d - %d.\n", beg_region, end_region))
+cat(sprintf("Time taken: %.3f seconds\n", time_taken_A))
+cat(sprintf("Total fragments starting in the region: %d\n\n", total_fragments_A))
+
+
+# --- B. Faster Function using tabulate() ---
+cat("--- Section B: Faster Coverage Function (getReadLineFast) ---\n")
+
+getReadLineFast <- function(locations, beg_region, end_region) {
+  # Assumes 'locations' is a sorted numeric vector
+  N <- end_region - beg_region + 1 # Size of the output vector
+
+  # Filter locations efficiently
+  in_region_indices <- which(locations >= beg_region & locations <= end_region)
+  if(length(in_region_indices) == 0) {
+      return(numeric(N)) # Return zeros if no reads in region
+  }
+  locs_in_region <- locations[in_region_indices]
+
+  # Adjust to 1-based indices relative to beg_region
+  adjusted_locs <- locs_in_region - beg_region + 1
+
+  # Use tabulate for fast counting
+  read_line <- tabulate(adjusted_locs, nbins = N)
+
+  return(read_line)
+}
+
+# Run faster function (primarily for comparison in C)
+tic("getReadLineFast execution")
+coverage_vector_B <- getReadLineFast(chr1_reads$Loc, beg_region, end_region)
+time_B <- toc(log = TRUE, quiet = TRUE)
+time_taken_B <- as.numeric(time_B$toc - time_B$tic)
+
+# Verify results
+results_match_A_B <- isTRUE(all.equal(coverage_vector_A, coverage_vector_B))
+cat(sprintf("Verification: Results from getReadLine and getReadLineFast match: %s\n", results_match_A_B))
+cat(sprintf("Time taken for getReadLineFast: %.3f seconds (for reference)\n", time_taken_B))
+
+# Explanation
+cat("Explanation for 'getReadLineFast' speed:\n")
+cat("1. Vectorized Filtering: Efficiently selects only reads within the target region.\n")
+cat("2. 'tabulate()' Function: Uses a highly optimized backend for counting positive integers.\n")
+cat("3. Reduced Iteration: Avoids R loops over reads or positions after filtering.\n")
+cat("Assumption: The 'locations' vector is numeric, sorted, and contains positive integers.\n\n")
+
+
+# --- C. Speed Comparison ---
+cat("--- Section C: Speed Comparison ---\n")
+
+compareSpeedCoverage <- function(locations, beg_region, end_region, func1, func2, func1_name, func2_name, repetitions = 5) {
+  times1 <- numeric(repetitions)
+  times2 <- numeric(repetitions)
+
+  cat(sprintf("Running speed comparison (%d repetitions)...\n", repetitions))
+  for (i in 1:repetitions) {
+    # Time func1
+    start_time <- proc.time()
+    coverage1 <- func1(locations, beg_region, end_region)
+    end_time <- proc.time()
+    times1[i] <- (end_time - start_time)[["elapsed"]]
+
+    # Time func2
+    start_time <- proc.time()
+    coverage2 <- func2(locations, beg_region, end_region)
+    end_time <- proc.time()
+    times2[i] <- (end_time - start_time)[["elapsed"]]
+
+    # Verify results match on first iteration
+    if (i == 1) {
+      if (!isTRUE(all.equal(coverage1, coverage2))) {
+        warning(paste("Functions", func1_name, "and", func2_name, "produce different results!"))
+      }
+    }
+     cat(".") # Progress indicator
+  }
+  cat(" Done.\n")
+
+  # Summarize results
+  results_df <- data.frame(
+    Implementation = factor(c(rep(func1_name, repetitions), rep(func2_name, repetitions)), levels=c(func1_name, func2_name)),
+    Time = c(times1, times2)
+  )
+
+  # Calculate summary statistics using aggregate
+  summary_stats_list <- aggregate(Time ~ Implementation, data = results_df,
+                             FUN = function(x) c(Mean = mean(x), Min = min(x), Max = max(x)))
+  # Convert matrix in summary_stats_list$Time to separate columns
+  summary_stats <- data.frame(Implementation = summary_stats_list$Implementation,
+                                Mean_Time = summary_stats_list$Time[, "Mean"],
+                                Min_Time = summary_stats_list$Time[, "Min"],
+                                Max_Time = summary_stats_list$Time[, "Max"])
+
+
+  # Calculate speedup
+  mean_time1 <- mean(times1)
+  mean_time2 <- mean(times2)
+  speedup <- if (mean_time2 > 1e-9) mean_time1 / mean_time2 else NA # Avoid division by zero
+
+  return(list(
+    raw_results = results_df,
+    summary = summary_stats,
+    speedup = speedup
+  ))
+}
+
+# Run the comparison
+comparison_results <- compareSpeedCoverage(chr1_reads$Loc, beg_region, end_region,
+                                         func1 = getReadLine, func2 = getReadLineFast,
+                                         func1_name = "getReadLine (While Loop)",
+                                         func2_name = "getReadLineFast (tabulate)",
+                                         repetitions = 5) # 3-5 repetitions recommended
+
+# Print the results
+cat("Speed Comparison Results:\n")
+print(comparison_results$summary, row.names=FALSE)
+cat(sprintf("\nAverage Speedup Factor ('getReadLineFast' vs 'getReadLine'): %.2fx faster\n", comparison_results$speedup))
+
+# Create a boxplot
+boxplot(Time ~ Implementation, data = comparison_results$raw_results,
+        main = "Execution Time Comparison (Single-Base Coverage)",
+        ylab = "Time (seconds)",
+        col = c("lightblue", "lightgreen"), outline=TRUE)
+# Add text with speedup factor
+text(x = 1.5, y = quantile(comparison_results$raw_results$Time, 0.95), # Position text reasonably
+     labels = sprintf("Speedup: %.1fx", comparison_results$speedup), cex = 0.9)
+cat("Boxplot generated showing time comparison.\n\n")
+
+
+# ============================================================================
+#                          (Part B: Data Analysis)
+# ============================================================================
+
+# --- D. Histogram of Single-Base Coverage ---
+cat("--- Section D: Histogram of Single-Base Coverage ---\n")
+
+# Use the result from the accurate function B
+max_cov_single_base <- max(coverage_vector_B, na.rm = TRUE)
+if (max_cov_single_base == 0) {
+    cat("Warning: Maximum single-base coverage is 0 in the selected region. Skipping histogram.\n\n")
+} else {
+    # Fixed breaks similar to lecture/Claude
+    hist_breaks <- -0.5:(min(max_cov_single_base, 20) + 0.5) # Show detail up to 20x
+
+    coverage_hist <- hist(coverage_vector_B,
+                          breaks = hist_breaks,
+                          main = sprintf("Histogram of Single-Base Coverage\n(Region %d - %d)", beg_region, end_region),
+                          xlab = "Number of Reads Starting at Position",
+                          ylab = "Number of Positions (Frequency)",
+                          col = "lightblue",
+                          xlim = range(hist_breaks))
+
+    # Add text labels (only for non-zero counts to reduce clutter)
+    non_zero_counts <- coverage_hist$counts > 0
+    text(coverage_hist$mids[non_zero_counts],
+         coverage_hist$counts[non_zero_counts],
+         labels = coverage_hist$counts[non_zero_counts],
+         pos = 3, cex = 0.7)
+
+    # Calculate and print summary statistics
+    avg_coverage_single <- mean(coverage_vector_B)
+    zero_coverage_pct <- mean(coverage_vector_B == 0) * 100
+    cat(sprintf("Average single-base coverage: %.5f\n", avg_coverage_single))
+    cat(sprintf("Percentage of positions with zero coverage: %.2f%%\n", zero_coverage_pct))
+    cat(sprintf("Maximum single-base coverage observed: %d\n", max_cov_single_base))
+    cat("Histogram plot generated.\n\n")
+}
+
+
+# --- E. Binned Coverage Analysis ---
+cat("--- Section E: Binned Coverage Analysis (10kb bins) ---\n")
+
+# Estimate chromosome length from max read location
+chr1_length_est <- max(chr1_reads$Loc)
+
+# Efficient Binning Function
+getBinnedCoverage <- function(locations, bin_size, chromosome_length) {
+  if (length(locations) == 0) return(numeric(0))
+  breaks <- seq(0, chromosome_length + bin_size, by = bin_size)
+  num_bins <- length(breaks) - 1
+  bin_indices <- cut(locations, breaks = breaks, labels = FALSE, include.lowest = TRUE, right = FALSE)
+  bin_counts_table <- table(factor(bin_indices, levels = 1:num_bins))
+  return(as.numeric(bin_counts_table))
+}
+
+# Calculate binned coverage
+tic("Calculating binned coverage")
+binned_coverage_E <- getBinnedCoverage(chr1_reads$Loc, bin_size, chr1_length_est)
+toc()
+
+# Create bin positions (center of bins) for plotting
+num_bins_actual <- length(binned_coverage_E)
+bin_centers <- seq(from = bin_size/2, by = bin_size, length.out = num_bins_actual)
+
+# --- Plot 1: Whole Chromosome ---
+cat("Generating plot for whole chromosome...\n")
+plot_ylim_upper_all <- quantile(binned_coverage_E, 0.995, na.rm = TRUE) * 1.5
+plot(bin_centers, binned_coverage_E,
+     type = "p", pch = '.', cex = 1.5, # Points (Gemini aesthetic)
+     col = rgb(0,0,0,0.3),
+     main = "Coverage Across Chromosome 1 (10kb Bins)",
+     xlab = "Approximate Position (bp)",
+     ylab = "Read Count per Bin",
+     ylim = c(0, max(10, plot_ylim_upper_all)))
+grid()
+median_coverage_all <- median(binned_coverage_E, na.rm=TRUE)
+abline(h = median_coverage_all, col = "darkorange", lty = 2, lwd=1.5)
+legend("topright", legend=sprintf("Overall Median = %.1f", median_coverage_all), col="darkorange", lty=2, lwd=1.5, bty="n", cex=0.8)
+
+# --- Plot 2: Zoom-in with CNV Analysis ---
+cat("Generating zoomed-in plot with CNV analysis...\n")
+start_bin_idx <- floor(beg_region / bin_size) + 1
+end_bin_idx <- floor(end_region / bin_size) + 1
+zoom_indices <- start_bin_idx:min(end_bin_idx, num_bins_actual)
+
+zoom_positions <- bin_centers[zoom_indices]
+zoom_coverage <- binned_coverage_E[zoom_indices]
+
+# Calculate thresholds based on ZOOM REGION stats
+zoom_mean <- mean(zoom_coverage, na.rm = TRUE)
+zoom_sd <- sd(zoom_coverage, na.rm = TRUE)
+high_threshold <- zoom_mean + 3 * zoom_sd
+low_threshold <- max(0, zoom_mean - 3 * zoom_sd)
+
+# Create the zoomed plot (using points)
+plot_ylim_zoom_upper <- quantile(zoom_coverage, 0.99, na.rm=TRUE) * 1.5
+plot(zoom_positions, zoom_coverage,
+     type = "p", pch = 19, cex = 0.6, # Points (Gemini aesthetic)
+     col = rgb(0,0,0,0.5),
+     main = sprintf("Coverage Zoom-in (Region %.1fMb - %.1fMb)", beg_region/1e6, end_region/1e6),
+     xlab = "Approximate Position (bp)",
+     ylab = "Read Count per Bin",
+     ylim = c(0, max(10, plot_ylim_zoom_upper, high_threshold * 1.1)))
+grid()
+
+# Add Mean and Threshold lines
+abline(h = zoom_mean, col = "red", lty = 2)
+abline(h = high_threshold, col = "darkred", lty = 3)
+abline(h = low_threshold, col = "darkgreen", lty = 3)
+
+# Identify and Highlight potential CNV points
+high_cnv_indices <- which(zoom_coverage > high_threshold)
+low_cnv_indices <- which(zoom_coverage < low_threshold)
+if (length(high_cnv_indices) > 0) {
+  points(zoom_positions[high_cnv_indices], zoom_coverage[high_cnv_indices], col = "red", pch = 19, cex = 0.8)
+}
+if (length(low_cnv_indices) > 0) {
+  points(zoom_positions[low_cnv_indices], zoom_coverage[low_cnv_indices], col = "green", pch = 19, cex = 0.8)
+}
+
+# Add legend
+legend("topright",
+       legend = c(sprintf("Mean = %.1f", zoom_mean),
+                  sprintf("High Thresh (Mean+3SD) = %.1f", high_threshold),
+                  sprintf("Low Thresh (Mean-3SD) = %.1f", low_threshold),
+                  "Potential Gain", "Potential Loss"),
+       col = c("red", "darkred", "darkgreen", "red", "green"),
+       lty = c(2, 3, 3, NA, NA), pch = c(NA, NA, NA, 19, 19),
+       pt.cex = c(NA,NA,NA, 0.8, 0.8), lwd= c(1,1,1,NA,NA),
+       bty="n", cex=0.7)
+
+# Report counts
+cat(sprintf("Potential CNV bins identified in zoom region (using Mean+/-3SD threshold):\n"))
+cat(sprintf(" - Bins above high threshold (Potential Gains): %d\n", length(high_cnv_indices)))
+cat(sprintf(" - Bins below low threshold (Potential Losses): %d\n\n", length(low_cnv_indices)))
+
+
+# --- F/G. Distribution Fitting (Binned Data) ---
+cat("--- Section F/G: Distribution Analysis of Binned Coverage ---\n")
+
+# Analyze the full binned coverage vector (binned_coverage_E)
+# Optional: Remove zeros or outliers for fitting. Let's use non-zeros.
+binned_coverage_nonzero <- binned_coverage_E[binned_coverage_E > 0]
+
+if(length(binned_coverage_nonzero) < 10) {
+    cat("Warning: Too few non-zero bins for reliable distribution fitting. Skipping.\n\n")
+} else {
+
+    # --- 1. Histogram and Normal Fit ---
+    fit_mean <- NA
+    fit_sd <- NA
+    # Use fitdistr for formal fit
+    normal_fit <- tryCatch(
+        fitdistr(binned_coverage_nonzero, "normal"),
+        error = function(e) { cat("Warning: fitdistr failed for Normal. Using manual mean/sd.\n"); NULL }
+    )
+    if (!is.null(normal_fit)) {
+      fit_mean <- normal_fit$estimate["mean"]
+      fit_sd <- normal_fit$estimate["sd"]
+    } else {
+      fit_mean <- mean(binned_coverage_nonzero, na.rm = TRUE)
+      fit_sd <- sd(binned_coverage_nonzero, na.rm = TRUE)
+    }
+    cat(sprintf("Parameters for Normal Fit: Mean=%.2f, SD=%.2f\n", fit_mean, fit_sd))
+
+    # Create histogram (density)
+    hist_res <- hist(binned_coverage_nonzero, breaks=50, plot=FALSE)
+    hist(binned_coverage_nonzero, breaks=50, freq = FALSE,
+         main = "Distribution of Binned Coverage (Non-Zero Bins)",
+         xlab = "Read Count per 10kb Bin", ylab = "Density",
+         ylim = c(0, max(hist_res$density)*1.1))
+
+    # Add fitted normal curve
+    curve(dnorm(x, mean = fit_mean, sd = fit_sd), add = TRUE, col = "red", lwd = 2)
+    legend("topright", legend = c("Observed Density", sprintf("Fitted Normal (μ=%.1f, σ=%.1f)", fit_mean, fit_sd)),
+           col = c("black", "red"), lty=c(NA,1), pch=c(15,NA), lwd=c(NA,2), bty="n", cex=0.8)
+
+    # --- 2. Q-Q Plot ---
+    qqnorm(binned_coverage_nonzero, main = "Normal Q-Q Plot (Non-Zero Binned Coverage)")
+    qqline(binned_coverage_nonzero, col = "red", lwd = 2)
+    cat("Histogram with Normal fit and Q-Q plot generated.\n")
+
+    # --- 3. Shapiro-Wilk Test ---
+    if (length(binned_coverage_nonzero) > 2 && length(binned_coverage_nonzero) <= 5000) {
+      shapiro_test <- shapiro.test(binned_coverage_nonzero)
+      cat("Shapiro-Wilk normality test results:\n")
+      cat(sprintf(" W = %.4f, p-value = %.3g\n", shapiro_test$statistic, shapiro_test$p.value))
+      if (shapiro_test$p.value < 0.05) cat(" Conclusion: Distribution significantly deviates from normality.\n")
+      else cat(" Conclusion: No significant deviation from normality detected.\n")
+    } else {
+      cat("Shapiro-Wilk test skipped (sample size not in range 3-5000).\n")
+    }
+
+    # --- 4. Poisson Comparison (Overdispersion Check) ---
+    observed_mean <- mean(binned_coverage_nonzero, na.rm = TRUE)
+    observed_var <- var(binned_coverage_nonzero, na.rm = TRUE)
+    dispersion_ratio <- observed_var / observed_mean
+    cat("\nComparison with Poisson distribution expectation:\n")
+    cat(sprintf(" Observed Mean: %.2f, Observed Variance: %.2f\n", observed_mean, observed_var))
+    cat(sprintf(" Dispersion Ratio (Variance / Mean): %.2f\n", dispersion_ratio))
+    if (dispersion_ratio > 1.2) cat(" Conclusion: Data shows clear OVERDISPERSION (Variance > Mean).\n")
+    else if (dispersion_ratio < 0.8) cat(" Conclusion: Data shows UNDERDISPERSION (Variance < Mean).\n")
+    else cat(" Conclusion: Dispersion is close to Poisson expectation (Variance ≈ Mean).\n")
+
+    # --- 5. Visual Comparison Plot (Optional but informative) ---
+    plot(density(binned_coverage_nonzero), col="black", lwd=2,
+         main="Fit Comparison: Observed vs Normal vs Poisson",
+         xlab="Coverage", ylim=c(0, max(hist_res$density, dnorm(fit_mean, fit_mean, fit_sd), dpois(round(observed_mean), observed_mean))*1.1) )
+    curve(dnorm(x, mean = fit_mean, sd = fit_sd), add = TRUE, col = "red", lwd = 2, lty=2)
+    points(0:max(binned_coverage_nonzero), dpois(0:max(binned_coverage_nonzero), lambda = observed_mean), col = "blue", type="h") # Use type='h' for discrete Poisson
+    legend("topright", legend=c("Observed Density", sprintf("Fitted Normal (μ=%.1f, σ=%.1f)", fit_mean, fit_sd), sprintf("Poisson (λ=%.1f)", observed_mean)),
+           col=c("black", "red", "blue"), lwd=c(2,2,1), lty=c(1,2,1), cex=0.8, bty="n")
+    cat("Comparative density plot generated.\n")
+
+
+    # --- Discussion Summary ---
+    cat("\nOverall Fit Assessment:\n")
+    cat(" - Visual Fit: Check histogram/density and Q-Q plot for deviations from Normal (esp. tails).\n")
+    cat(" - Normality Test: Shapiro test often rejects normality for count data.\n")
+    cat(" - Dispersion: Overdispersion (Var > Mean) is typical, making Poisson inadequate.\n")
+    cat(" - Conclusion: Normal is often a poor fit; Negative Binomial might be better.\n\n")
+
+} # End if enough non-zero bins
+
+cat("--- Analysis Complete ---\n")
