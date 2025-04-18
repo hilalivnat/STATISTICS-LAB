@@ -9,7 +9,8 @@ editor_options:
 markdown: 
 wrap: sentence
 ---
-
+install.packages("tictoc")
+```{r}
 # ============================================================================
 #                                (Assignment 2)
 # ============================================================================
@@ -19,6 +20,9 @@ wrap: sentence
 library(data.table)
 library(tictoc)
 library(MASS) # For fitdistr
+
+options(scipen = 999) # Higher value = stronger bias against scientific notation
+
 
 # --- Parameters ---
 # Define file path (based on Group C)
@@ -46,8 +50,12 @@ colnames(chr1_reads) <- c("Chrom", "Loc", "FragLen")
 cat("Sorting data by location...\n")
 setorder(chr1_reads, Loc) # Use data.table's efficient sorting
 cat("Data loaded and sorted.\n\n")
-
-
+```
+In the getReadLine function, we use a while loop, and for each position we update the count of occurrences at that position. This operation takes a long time because its complexity depends on the number of occurrences, not the number of cells.
+In the getReadLineFast function, we use R’s built-in tabulate function, which takes a vector of natural numbers and counts the number of occurrences of each number. The function assumes it receives natural numbers (an assumption we used since we're dealing with positions).
+It is considered much faster than a while loop, which is why we used it.
+As shown, the function that uses tabulate runs significantly faster, with a median time of 0.15 seconds, compared to 0.55 seconds for getReadLine — which is much slower.
+```{r}
 # ============================================================================
 #                    (Part A: Data Structure Change)
 # ============================================================================
@@ -139,7 +147,6 @@ cat("2. 'tabulate()' Function: Uses a highly optimized backend for counting posi
 cat("3. Reduced Iteration: Avoids R loops over reads or positions after filtering.\n")
 cat("Assumption: The 'locations' vector is numeric, sorted, and contains positive integers.\n\n")
 
-
 # --- C. Speed Comparison ---
 cat("--- Section C: Speed Comparison ---\n")
 
@@ -220,8 +227,9 @@ boxplot(Time ~ Implementation, data = comparison_results$raw_results,
 text(x = 1.5, y = quantile(comparison_results$raw_results$Time, 0.95), # Position text reasonably
      labels = sprintf("Speedup: %.1fx", comparison_results$speedup), cex = 0.9)
 cat("Boxplot generated showing time comparison.\n\n")
+```
 
-
+```{r}
 # ============================================================================
 #                          (Part B: Data Analysis)
 # ============================================================================
@@ -260,8 +268,11 @@ if (max_cov_single_base == 0) {
     cat(sprintf("Maximum single-base coverage observed: %d\n", max_cov_single_base))
     cat("Histogram plot generated.\n\n")
 }
-
-
+```
+When we look at the coverage across the entire chromosome, we observe relatively high variability between positions. At the beginning of the chromosome, the coverage appears more uniform (there is still considerable variation, but it is evenly distributed around the mean). Further along, we see many irregular values, including a region with no coverage at all, a region entirely above the average, and another entirely below it.
+When zooming in on the chromosome and focusing on a specific region, the variability is much smaller, and the distribution is relatively uniform (though there are still some outliers).
+It seems that examining coverage across the whole chromosome may not be the most appropriate approach—instead, it would be better to analyze coverage by specific regions.
+```{r}
 # --- E. Binned Coverage Analysis ---
 cat("--- Section E: Binned Coverage Analysis (10kb bins) ---\n")
 
@@ -358,8 +369,9 @@ legend("topright",
 cat(sprintf("Potential CNV bins identified in zoom region (using Mean+/-3SD threshold):\n"))
 cat(sprintf(" - Bins above high threshold (Potential Gains): %d\n", length(high_cnv_indices)))
 cat(sprintf(" - Bins below low threshold (Potential Losses): %d\n\n", length(low_cnv_indices)))
-
-
+```
+As can be seen, the best-fitting normal distribution has a mean of 656.8 and a variance of 525.1. However, the fit is not very accurate, as the observed distribution shows many more values concentrated around the mean. This is likely due to what was explained earlier—at the beginning of the chromosome, we observe a relatively uniform distribution, but further along, there are irregular patterns, which likely affect the shape of the observed distribution.
+```{r}
 # --- F/G. Distribution Fitting (Binned Data) ---
 cat("--- Section F/G: Distribution Analysis of Binned Coverage ---\n")
 
@@ -427,14 +439,37 @@ if(length(binned_coverage_nonzero) < 10) {
     else if (dispersion_ratio < 0.8) cat(" Conclusion: Data shows UNDERDISPERSION (Variance < Mean).\n")
     else cat(" Conclusion: Dispersion is close to Poisson expectation (Variance ≈ Mean).\n")
 
+    # # --- 5. Visual Comparison Plot (Optional but informative) ---
+    # plot(density(binned_coverage_nonzero), col="black", lwd=2,
+    #      main="Fit Comparison: Observed vs Normal vs Poisson",
+    #      xlab="Coverage", ylim=c(0, max(hist_res$density, dnorm(fit_mean, fit_mean, fit_sd), dpois(round(observed_mean), observed_mean))*1.1) )
+    # curve(dnorm(x, mean = fit_mean, sd = fit_sd), add = TRUE, col = "red", lwd = 2, lty=2)
+    # #points(0:max(binned_coverage_nonzero), dpois(0:max(binned_coverage_nonzero), lambda = observed_mean), col = "blue", type="h") # Use type='h' for discrete Poisson
+    # legend("topright", legend=c("Observed Density", sprintf("Fitted Normal (μ=%.1f, σ=%.1f)", fit_mean, fit_sd), 
+    #                             #sprintf("Poisson (λ=%.1f)", observed_mean)
+    #                             ),
+    #        col=c("black", "red"
+    #              #,"blue"
+    #              ), 
+    #        #lwd=c(2,2,1), lty=c(1,2,1), cex=0.8, bty="n"
+    #        )
     # --- 5. Visual Comparison Plot (Optional but informative) ---
-    plot(density(binned_coverage_nonzero), col="black", lwd=2,
-         main="Fit Comparison: Observed vs Normal vs Poisson",
-         xlab="Coverage", ylim=c(0, max(hist_res$density, dnorm(fit_mean, fit_mean, fit_sd), dpois(round(observed_mean), observed_mean))*1.1) )
-    curve(dnorm(x, mean = fit_mean, sd = fit_sd), add = TRUE, col = "red", lwd = 2, lty=2)
-    points(0:max(binned_coverage_nonzero), dpois(0:max(binned_coverage_nonzero), lambda = observed_mean), col = "blue", type="h") # Use type='h' for discrete Poisson
-    legend("topright", legend=c("Observed Density", sprintf("Fitted Normal (μ=%.1f, σ=%.1f)", fit_mean, fit_sd), sprintf("Poisson (λ=%.1f)", observed_mean)),
-           col=c("black", "red", "blue"), lwd=c(2,2,1), lty=c(1,2,1), cex=0.8, bty="n")
+    plot(density(binned_coverage_nonzero), col = "black", lwd = 2,
+         main = "Fit Comparison: Observed vs Normal",
+         xlab = "Coverage",
+         ylim = c(0, max(hist_res$density, 
+                         dnorm(fit_mean, fit_mean, fit_sd)) * 7))
+    
+    curve(dnorm(x, mean = fit_mean, sd = fit_sd), add = TRUE, col = "red", lwd = 2, lty = 2)
+    
+    legend("topright",
+           legend = c("Observed Density", 
+                      sprintf("Fitted Normal (μ=%.1f, σ=%.1f)", fit_mean, fit_sd)),
+           col = c("black", "red"),
+           lwd = c(2, 2),
+           lty = c(1, 2),
+           cex = 0.8,
+           bty = "n")
     cat("Comparative density plot generated.\n")
 
 
@@ -448,3 +483,4 @@ if(length(binned_coverage_nonzero) < 10) {
 } # End if enough non-zero bins
 
 cat("--- Analysis Complete ---\n")
+```
