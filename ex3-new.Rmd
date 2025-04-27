@@ -1,0 +1,154 @@
+---
+title: "ex3"
+author: "Roei Aharon, Hila Livnat, Daniel Erez"
+output:
+  html_document:
+    code_folding: hide
+editor_options: 
+markdown: 
+wrap: sentence
+date: "2025-04-25"
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+#Main Definitions 
+library('data.table')
+source("helper_functions.R")
+
+reads_file <- 'TCGA-13-0723-10B_lib1_all_chr1.forward'
+chr1_reads = fread(reads_file) 
+colnames(chr1_reads) = c("Chrom","Loc","FragLen")
+
+# Define region for analysis
+beg_region <- 10000000 # Start at 10M
+end_region <- beg_region + 20000000 - 1 # 20M base region
+
+# Define bin size for Part B
+bin_size <- 10000
+par(mar = c(5, 4, 4, 20))  # Bottom, left, top, right (right side bigger)
+covers <- getReadLineFast(chr1_reads$Loc, beg_region, end_region)
+mean_cover = mean(covers) 
+num_frags = length(covers)
+Num_cells = max(chr1_reads$Loc)
+```
+```{r}
+
+
+k <- 0:5
+poisson_probs <- dpois(k, lambda = num_frags/Num_cells)
+
+# Calculate probability for "5 and above"
+poisson_probs[6] <- 1 - sum(poisson_probs[1:5])
+
+# Expected counts
+n <- length(covers)
+expected_counts <- poisson_probs * n
+observed_tab <- tabulate(pmin(covers, 5) + 1, nbins = 6)  # values 0-5+
+
+# Print expected counts
+round(expected_counts, 2)
+# Create a table
+result_table <- data.frame(
+  Covers = c(0:4, "5+"),
+  Observed = observed_tab,
+  Expected = round(expected_counts, 2)
+)
+print(result_table)
+# barplot(
+#   t(as.matrix(result_table[,2:3])), beside = TRUE,
+#   names.arg = result_table$Covers,
+#   legend.text = c("Observed", "Expected"),
+#   ylab = "Count",
+#   main = "Observed vs Expected Poisson Distribution"
+# )
+# First set margins bigger on the right
+
+bp <- barplot(
+  t(as.matrix(result_table[,2:3])), beside = TRUE,
+  names.arg = result_table$Covers,
+  col = c("steelblue", "tomato"),
+  ylab = "Count (log scale)",
+  main = "Observed vs Expected Poisson Distribution",
+  log = "y", 
+  yaxt = "n"  # Suppress default Y-axis
+)
+
+# Add better Y-axis manually
+axis(2, at = 10^(0:7), labels = c("1", "10", "100", "1k", "10k", "100k", "1M", "10M"))
+
+
+# Add the legend OUTSIDE the plot
+legend(
+  "topright",
+  inset = c(-0.15, 0),  # Push it outside
+  legend = c("Observed", "Expected"),
+  fill = c("steelblue", "tomato"),
+  bty = "n",
+  xpd = TRUE            # Allow drawing outside plot area
+)
+
+```
+
+```{r}
+bin_nums <- ceiling(Num_cells/bin_size)
+not_filtered_bin_covers <- numeric(bin_nums -1)
+for (k in 1:bin_nums-1){
+  not_filtered_bin_covers[k] = sum(covers[bin_size*(k-1)+1 : bin_size*k])
+}
+bin_covers <- na.omit(not_filtered_bin_covers)
+
+robust_mean <- median(bin_covers,na.rm = TRUE)
+robust_var <- mad(bin_covers, na.rm = TRUE)^2
+```
+```{r}
+# Poisson model probabilities
+range_vals <- min(bin_covers, na.rm = TRUE):max(bin_covers, na.rm = TRUE)
+poiss_prob_bin <- dpois(seq(
+  from = (min(bin_covers) %/% 100) * 100,
+  to = (max(bin_covers) %/% 100) * 100,
+  by = 50
+), lambda = (bin_size*num_frags)/Num_cells)
+# Observed frequencies
+obs_table <- table(bin_covers)
+
+# Normalize observed frequencies to probabilities
+obs_prob <- obs_table / sum(obs_table)
+
+# Create comparison dataframe
+compare_df <- data.frame(
+  SumFrag = as.integer(names(obs_table)),
+  ObservedProb = as.numeric(obs_prob),
+  PoissonProb = poiss_prob_bin[match(as.integer(names(obs_table)), range_vals)]
+)
+
+bin_hist <- hist(
+  bin_covers,
+  main = "Histogram of Fragment Sums per Bin (Size 10000)",    # Title
+  xlab = "Sum of Fragments in Bin",                # X-axis label
+  ylab = "Frequency",                              # Y-axis label
+  col = "lightblue",                               # Optional: nice color
+  border = "white",                                 # Optional: clean bar borders
+  freq = FALSE
+)# lines(range_vals,poiss_prob_bin*bin_nums, col="red")
+
+plot(
+  log(poiss_prob_bin), log(bin_hist$density),
+  xlab = "Log Poisson Model Probability",
+  ylab = "Log Observed Density",
+  main = "Comparison of Observed vs Poisson Model (Log-Log Plot)",
+  pch = 16,  # Filled points
+  col = "blue"
+)
+
+# Add y = x line
+abline(0, 1, col = "red", lty = 2, lwd = 2)  # slope=1, intercept=0
+
+
+VRM <- robust_var/robust_mean
+print("VRM: ", VRM)
+
+```
