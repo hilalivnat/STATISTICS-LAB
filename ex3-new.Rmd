@@ -12,143 +12,162 @@ date: "2025-04-25"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-```{r}
-#Main Definitions 
-library('data.table')
-source("helper_functions.R")
-
-reads_file <- 'TCGA-13-0723-10B_lib1_all_chr1.forward'
-chr1_reads = fread(reads_file) 
-colnames(chr1_reads) = c("Chrom","Loc","FragLen")
-
-# Define region for analysis
-beg_region <- 10000000 # Start at 10M
-end_region <- beg_region + 20000000 - 1 # 20M base region
-
-# Define bin size for Part B
-bin_size <- 10000
-par(mar = c(5, 4, 4, 20))  # Bottom, left, top, right (right side bigger)
-covers <- getReadLineFast(chr1_reads$Loc, beg_region, end_region)
-mean_cover = mean(covers) 
-num_frags = length(covers)
-Num_cells = max(chr1_reads$Loc)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 ```
 ```{r}
 
+# ============================================================================
+#                                PART 2: GC vs Coverage
+# ============================================================================
+cat("\n--- Part 2: GC vs Coverage ---\n")
 
-k <- 0:5
-poisson_probs <- dpois(k, lambda = num_frags/Num_cells)
+# --- Parameters for Part 2 ---
+# Select a region of approximately 50 million bases
+part2_beg_region <- 100000000 # Start at 100M
+part2_end_region <- part2_beg_region + 50000000 - 1 # End at ~150M
+part2_region_length <- part2_end_region - part2_beg_region + 1
+part2_bin_size <- part1b_bin_size # Use the same bin size as Part 1b (10000)
 
-# Calculate probability for "5 and above"
-poisson_probs[6] <- 1 - sum(poisson_probs[1:5])
+cat(sprintf("Analyzing region: %d - %d (%d bp)\n", part2_beg_region, part2_end_region, part2_region_length))
+cat(sprintf("Using Bin Size: %d\n", part2_bin_size))
 
-# Expected counts
-n <- length(covers)
-expected_counts <- poisson_probs * n
-observed_tab <- tabulate(pmin(covers, 5) + 1, nbins = 6)  # values 0-5+
+# --- Data Loading / Simulation for Part 2 ---
+# !! IMPORTANT !! Load ACTUAL sequence for this region if available.
+# Using SIMULATION as placeholder.
+cat("Simulating sequence data for region 100M-150M (replace with actual data loading)...\n")
+set.seed(123) # for reproducibility
+part2_sequence_vector <- sample(c("A", "T", "C", "G"), 
+                                size = part2_region_length, 
+                                replace = TRUE, 
+                                prob = c(0.29, 0.29, 0.21, 0.21)) # Approx human genome base frequencies
+cat("Sequence simulation complete.\n")
 
-# Print expected counts
-round(expected_counts, 2)
-# Create a table
-result_table <- data.frame(
-  Covers = c(0:4, "5+"),
-  Observed = observed_tab,
-  Expected = round(expected_counts, 2)
+# --- Calculate Coverage per Bin for Part 2 Region ---
+cat("Calculating binned coverage for Part 2 region...\n")
+reads_in_part2_region <- chr1_reads[Loc >= part2_beg_region & Loc <= part2_end_region]
+part2_num_bins <- ceiling(part2_region_length / part2_bin_size)
+relative_locs_part2 <- reads_in_part2_region$Loc - part2_beg_region + 1
+coverage_per_bin_part2 <- tabulate(ceiling(relative_locs_part2 / part2_bin_size), nbins = part2_num_bins)
+cat(sprintf("Calculated coverage for %d bins.\n", length(coverage_per_bin_part2)))
+
+# --- Calculate GC Content per Bin for Part 2 Region ---
+gc_per_bin_part2 <- calculate_gc_per_bin(
+  sequence_vector = part2_sequence_vector,
+  seq_start = part2_beg_region, 
+  region_start = part2_beg_region,
+  region_end = part2_end_region,
+  bin_size = part2_bin_size
 )
-print(result_table)
-# barplot(
-#   t(as.matrix(result_table[,2:3])), beside = TRUE,
-#   names.arg = result_table$Covers,
-#   legend.text = c("Observed", "Expected"),
-#   ylab = "Count",
-#   main = "Observed vs Expected Poisson Distribution"
-# )
-# First set margins bigger on the right
+cat(sprintf("Calculated GC content (count) for %d bins.\n", length(gc_per_bin_part2)))
 
-bp <- barplot(
-  t(as.matrix(result_table[,2:3])), beside = TRUE,
-  names.arg = result_table$Covers,
-  col = c("steelblue", "tomato"),
-  ylab = "Count (log scale)",
-  main = "Observed vs Expected Poisson Distribution",
-  log = "y", 
-  yaxt = "n"  # Suppress default Y-axis
-)
-
-# Add better Y-axis manually
-axis(2, at = 10^(0:7), labels = c("1", "10", "100", "1k", "10k", "100k", "1M", "10M"))
-
-
-# Add the legend OUTSIDE the plot
-legend(
-  "topright",
-  inset = c(-0.15, 0),  # Push it outside
-  legend = c("Observed", "Expected"),
-  fill = c("steelblue", "tomato"),
-  bty = "n",
-  xpd = TRUE            # Allow drawing outside plot area
-)
-
-```
-
-```{r}
-bin_nums <- ceiling(Num_cells/bin_size)
-not_filtered_bin_covers <- numeric(bin_nums -1)
-for (k in 1:bin_nums-1){
-  not_filtered_bin_covers[k] = sum(covers[bin_size*(k-1)+1 : bin_size*k])
+# --- Combine Data ---
+if (length(coverage_per_bin_part2) != length(gc_per_bin_part2)) {
+  warning("Mismatch in number of bins between coverage and GC counts! Check calculations.")
+  min_len <- min(length(coverage_per_bin_part2), length(gc_per_bin_part2))
+  coverage_per_bin_part2 <- coverage_per_bin_part2[1:min_len]
+  gc_per_bin_part2 <- gc_per_bin_part2[1:min_len]
 }
-bin_covers <- na.omit(not_filtered_bin_covers)
 
-robust_mean <- median(bin_covers,na.rm = TRUE)
-robust_var <- mad(bin_covers, na.rm = TRUE)^2
-```
-```{r}
-# Poisson model probabilities
-range_vals <- min(bin_covers, na.rm = TRUE):max(bin_covers, na.rm = TRUE)
-poiss_prob_bin <- dpois(seq(
-  from = (min(bin_covers) %/% 100) * 100,
-  to = (max(bin_covers) %/% 100) * 100,
-  by = 50
-), lambda = (bin_size*num_frags)/Num_cells)
-# Observed frequencies
-obs_table <- table(bin_covers)
-
-# Normalize observed frequencies to probabilities
-obs_prob <- obs_table / sum(obs_table)
-
-# Create comparison dataframe
-compare_df <- data.frame(
-  SumFrag = as.integer(names(obs_table)),
-  ObservedProb = as.numeric(obs_prob),
-  PoissonProb = poiss_prob_bin[match(as.integer(names(obs_table)), range_vals)]
+combined_data_part2 <- data.frame(
+  bin_index = 1:length(coverage_per_bin_part2),
+  gc_count = gc_per_bin_part2,
+  coverage_count = coverage_per_bin_part2,
+  # <<< Calculate GC percentage for plotting/analysis >>>
+  gc_percentage = (gc_per_bin_part2 / part2_bin_size) * 100 
 )
 
-bin_hist <- hist(
-  bin_covers,
-  main = "Histogram of Fragment Sums per Bin (Size 10000)",    # Title
-  xlab = "Sum of Fragments in Bin",                # X-axis label
-  ylab = "Frequency",                              # Y-axis label
-  col = "lightblue",                               # Optional: nice color
-  border = "white",                                 # Optional: clean bar borders
-  freq = FALSE
-)# lines(range_vals,poiss_prob_bin*bin_nums, col="red")
+cat(sprintf("Combined GC and Coverage data for %d bins.\n", nrow(combined_data_part2)))
+head(combined_data_part2)
 
-plot(
-  log(poiss_prob_bin), log(bin_hist$density),
-  xlab = "Log Poisson Model Probability",
-  ylab = "Log Observed Density",
-  main = "Comparison of Observed vs Poisson Model (Log-Log Plot)",
-  pch = 16,  # Filled points
-  col = "blue"
-)
+# --- Part 2a: Examine Correlation ---
+cat("\n--- Part 2a: Correlation Analysis ---\n")
 
-# Add y = x line
-abline(0, 1, col = "red", lty = 2, lwd = 2)  # slope=1, intercept=0
+# <<< Use cor.test() for significance testing >>>
+# Correlate GC content (count or percentage) with coverage count
+cor_test_result <- cor.test(combined_data_part2$gc_percentage, 
+                            combined_data_part2$coverage_count, 
+                            method = "pearson", use = "complete.obs")
 
+# Extract values for reporting and plotting
+correlation_estimate <- cor_test_result$estimate
+correlation_p_value <- cor_test_result$p.value
 
-VRM <- robust_var/robust_mean
-print("VRM: ", VRM)
+# Report results clearly
+cat(sprintf("Pearson correlation between GC Percentage and Coverage count:\n"))
+cat(sprintf("  r = %.4f, p-value = %.3g\n", correlation_estimate, correlation_p_value))
+
+# Interpretation based on estimate and p-value
+if (correlation_p_value < 0.05) {
+    if (correlation_estimate > 0) {
+        cat("Conclusion: Significant positive correlation found.\n")
+        cat("This aligns with the common finding (assumed from Dohm's paper) that regions with higher GC content tend to have higher read coverage.\n")
+    } else {
+        cat("Conclusion: Significant negative correlation found.\n")
+        cat("This would contradict the common finding. Further investigation needed.\n")
+    }
+} else {
+    cat("Conclusion: No significant linear correlation found (p >= 0.05).\n")
+    cat("GC content does not show a strong linear relationship with coverage in this region/dataset.\n")
+}
+
+# --- Part 2b: Plot GC against Number of Reads ---
+cat("\n--- Part 2b: Scatter Plot ---\n")
+
+# Create the plot using ggplot2
+plot_gc_vs_coverage <- ggplot(combined_data_part2, aes(x = gc_percentage, y = coverage_count)) +
+  geom_point(alpha = 0.3, size = 1.5, color="blue") + # Add transparency
+  geom_smooth(method = "lm", color = "red", se = FALSE) + # Add linear model trendline
+  # Optional: Add loess smooth geom_smooth(method = "loess", color = "darkgreen", se = FALSE, linetype="dashed") +
+  labs(
+    title = "Part 2b: GC Content vs. Read Coverage per Bin",
+    subtitle = sprintf("Region %d-%d, Bin Size=%d", part2_beg_region, part2_end_region, part2_bin_size),
+    x = "GC Content (%)",
+    y = "Read Coverage (Fragments per Bin)"
+  ) +
+  # <<< Add annotation with correlation coefficient >>>
+  annotate("text", 
+           x = quantile(combined_data_part2$gc_percentage, 0.95, na.rm=TRUE), # Position top-right
+           y = quantile(combined_data_part2$coverage_count, 0.95, na.rm=TRUE), 
+           label = sprintf("r = %.3f", correlation_estimate), 
+           hjust = 1, vjust = 1, size = 4, color="black") + # Adjust positioning/size
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(plot_gc_vs_coverage)
+
+# Observations
+cat("Observations from the plot:\n")
+cat("- The plot shows GC percentage vs. coverage for each bin.\n")
+cat("- The red line is the linear regression trend.\n")
+# Add interpretation based on correlation result
+if (correlation_p_value < 0.05 && correlation_estimate > 0) {
+ cat("- A positive trend is visually apparent, matching the significant positive correlation.\n")
+} else if (correlation_p_value < 0.05 && correlation_estimate < 0) {
+ cat("- A negative trend is visually apparent, matching the significant negative correlation.\n")
+} else {
+  cat("- No clear linear trend is visually dominant, consistent with the non-significant correlation.\n")
+}
+cat("- The scatter indicates variability not explained by GC content alone.\n")
+
+# --- Part 2c: Relate Plot to Correlation AND to Part 1 ---
+cat("\n--- Part 2c: Relating Plot, Correlation, and Part 1 Findings ---\n")
+cat("1. The correlation analysis (Part 2a) numerically assessed the linear relationship between GC content and coverage, yielding r =", sprintf("%.3f", correlation_estimate), " (p =", sprintf("%.3g", correlation_p_value), ").\n")
+cat("2. The scatter plot (Part 2b) visually represents this relationship. The trendline's slope and the tightness of points around it correspond to the sign and magnitude of 'r'.\n")
+# <<< Add the connection back to Part 1b >>>
+cat("3. The Variance-to-Mean Ratio (VMR) calculated in Part 1b was", sprintf("%.3f", VMR_part1b), ".\n") 
+if (VMR_part1b > 1.1) {
+    cat("   This indicated overdispersion, meaning the variance in binned coverage was higher than expected under a uniform Poisson model.\n")
+    cat("4. The correlation between GC content and coverage found here (Part 2) provides a biological explanation for some of this overdispersion.\n")
+    if (correlation_p_value < 0.05) {
+       cat("   Because coverage systematically varies with GC content (a non-random factor), the assumption of a uniform, constant rate (lambda) for the Poisson distribution is violated across bins with different GC compositions.\n")
+    } else {
+       cat("   While no significant *linear* GC correlation was found here, other factors or non-linear relationships might still contribute to the observed overdispersion.\n")
+    }
+    cat("5. Therefore, the GC bias (if significant) is one reason why the simple Poisson model was a poor fit for the observed binned coverage distribution in Part 1b.\n")
+} else {
+    cat("   This value was close to 1, suggesting the dispersion wasn't significantly different from Poisson expectations *after filtering extremes*.\n")
+    cat("4. In this case, while GC content might still correlate with coverage, its effect wasn't strong enough to cause significant overdispersion in the filtered dataset, or other factors balanced it out.\n")
+}
 
 ```
