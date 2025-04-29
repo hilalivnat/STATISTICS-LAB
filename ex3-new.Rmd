@@ -10,10 +10,160 @@ wrap: sentence
 date: "2025-04-25"
 
 ---
+```{r}
+#Main Definitions 
+library('data.table')
+source("helper_functions.R")
+library(ggplot2)
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+reads_file <- 'TCGA-13-0723-10B_lib1_all_chr1.forward'
+chr1_reads = fread(reads_file) 
+colnames(chr1_reads) = c("Chrom","Loc","FragLen")
+
+# Define region for analysis
+beg_region <- 10000000 # Start at 10M
+end_region <- beg_region + 20000000 - 1 # 20M base region
+
+# Define bin size for Part B
+bin_size <- 10000
+par(mar = c(5, 4, 4, 2))  # Bottom, left, top, right (right side bigger)
+covers <- getReadLineFast(chr1_reads$Loc, beg_region, end_region)
+mean_cover = mean(covers) 
+cat("Meac Cover for cell: ", mean_cover)
+num_frags = length(covers)
+q1a_num_cells = end_region - beg_region + 1
+Num_cells = max(chr1_reads$Loc)
 ```
+```{r}
+
+
+k <- 0:5
+poisson_probs <- dpois(k, lambda = num_frags/q1a_num_cells)
+
+# Calculate probability for "5 and above"
+poisson_probs[6] <- 1 - sum(poisson_probs[1:5])
+
+# Expected counts
+n <- length(covers)
+expected_counts <- poisson_probs * n
+observed_tab <- tabulate(pmin(covers, 5) + 1, nbins = 6)  # values 0-5+
+
+# Print expected counts
+round(expected_counts, 2)
+# Create a table
+result_table <- data.frame(
+  Covers = c(0:4, "5+"),
+  Observed = observed_tab,
+  Expected = round(expected_counts, 2)
+)
+print(result_table)
+# barplot(
+#   t(as.matrix(result_table[,2:3])), beside = TRUE,
+#   names.arg = result_table$Covers,
+#   legend.text = c("Observed", "Expected"),
+#   ylab = "Count",
+#   main = "Observed vs Expected Poisson Distribution"
+# )
+# First set margins bigger on the right
+
+bp <- barplot(
+  t(as.matrix(result_table[,2:3])), beside = TRUE,
+  names.arg = result_table$Covers,
+  col = c("steelblue", "tomato"),
+  ylab = "Count (log scale)",
+  main = "Observed vs Expected Poisson Distribution",
+  log = "y", 
+  yaxt = "n"  # Suppress default Y-axis
+)
+
+# Add better Y-axis manually
+axis(2, at = 10^(0:7), labels = c("1", "10", "100", "1k", "10k", "100k", "1M", "10M"))
+
+
+# Add the legend OUTSIDE the plot
+legend(
+  "topright",
+  inset = c(-0.15, 0),  # Push it outside
+  legend = c("Observed", "Expected"),
+  fill = c("steelblue", "tomato"),
+  bty = "n",
+  xpd = TRUE            # Allow drawing outside plot area
+)
+
+```
+
+```{r}
+bin_nums <- ceiling(Num_cells/bin_size)
+not_filtered_bin_covers <- numeric(bin_nums -1)
+for (k in 1:bin_nums-1){
+  not_filtered_bin_covers[k] = sum(covers[bin_size*(k-1)+1 : bin_size*k])
+}
+bin_covers <- na.omit(not_filtered_bin_covers)
+
+robust_mean <- median(bin_covers,na.rm = TRUE)
+robust_var <- mad(bin_covers, na.rm = TRUE)^2
+cat("Mean: ", robust_mean)
+cat("\nVariance: ", robust_var, "Expected Variance:", robust_mean)
+```
+```{r}
+# Poisson model probabilities
+range_vals <- min(bin_covers, na.rm = TRUE):max(bin_covers, na.rm = TRUE)
+x_vals <- seq(
+  from = (min(bin_covers) %/% 100) * 100,
+  to = (max(bin_covers) %/% 100) * 100,
+  by = 10
+)
+poiss_prob_bin <- dpois(x_vals, lambda = (bin_size*num_frags)/Num_cells)
+# Observed frequencies
+obs_table <- table(bin_covers)
+
+# Normalize observed frequencies to probabilities
+obs_prob <- obs_table / sum(obs_table)
+
+# Create comparison dataframe
+compare_df <- data.frame(
+  SumFrag = as.integer(names(obs_table)),
+  ObservedProb = as.numeric(obs_prob),
+  PoissonProb = poiss_prob_bin[match(as.integer(names(obs_table)), range_vals)]
+)
+poiss_curve <- poiss_prob_bin
+bin_hist <- hist(
+  bin_covers,
+  main = "Histogram of Fragment Sums per Bin (Size 10000)",    # Title
+  xlab = "Sum of Fragments in Bin",                # X-axis label
+  ylab = "Frequency",                              # Y-axis label
+  col = "lightblue",                               # Optional: nice color
+  border = "white",                                 # Optional: clean bar borders
+  freq = FALSE,
+  breaks = 100
+)
+
+lines(x_vals,poiss_curve, col="red")
+
+plot(
+  log(tail(poiss_prob_bin, 20)), log(tail(bin_hist$density, 20)),
+  xlab = "Log(Poisson Model Probability)",
+  ylab = "Log(Observed Density)",
+  main = "Log-Log Plot: Observed vs Poisson Model (Cover >= 700)",
+  pch = 16,  # Filled blue points
+  col = "blue"
+)
+
+
+# Add y = x line
+abline(0, 1, col = "red", lty = 2, lwd = 2)  # slope=1, intercept=0
+
+
+VMR_part1b <- robust_var/robust_mean
+cat("VRM: ", VMR_part1b)
+```
+Based on the histogram, it appears that starting from a coverage of 700, the distribution resembles a Poisson distribution. However, the peak is much lower.
+This can also be seen in the plot comparing the log-probabilities of these points, where the data does not exactly align around the linear line.
+Therefore, there is a certain similarity, but the fit is still not perfect.
+
+
+
 ```{r}
 
 # ============================================================================
@@ -26,6 +176,7 @@ cat("\n--- Part 2: GC vs Coverage ---\n")
 part2_beg_region <- 100000000 # Start at 100M
 part2_end_region <- part2_beg_region + 50000000 - 1 # End at ~150M
 part2_region_length <- part2_end_region - part2_beg_region + 1
+part1b_bin_size <- bin_size
 part2_bin_size <- part1b_bin_size # Use the same bin size as Part 1b (10000)
 
 cat(sprintf("Analyzing region: %d - %d (%d bp)\n", part2_beg_region, part2_end_region, part2_region_length))
