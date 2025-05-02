@@ -1,0 +1,171 @@
+---
+title: "ex4"
+author: "Roei Aharon, Hila Livnat, Daniel Erez"
+output:
+  html_document:
+    code_folding: hide
+editor_options: 
+markdown: 
+wrap: sentence
+date: "2025-05-01"
+
+---
+```{r}
+# --- 0. Setup: Load Libraries and Data ---
+# Ensure necessary packages are installed:
+install.packages(c("splines", "ggplot2", "dplyr", "tictoc"))
+library(splines)
+library(ggplot2)
+library(dplyr) # For data manipulation like mutate and group_by
+library(tictoc) # For timing
+
+# Load the data (assuming the file path from Lecture 4)
+# NOTE: ADJUST THE FILE PATH!!!!!
+data_fname_5K = "reads_gc_5K.rda"
+if (!file.exists(data_fname_5K)) {
+    stop(paste("Error: Data file not found at path:", data_fname_5K,
+               "\nPlease ensure the file exists and the path is correct."))
+}
+load(data_fname_5K)
+
+# Ensure GC_5K is a proportion (check if max value is > 1, implying counts)
+# Assuming bin_size is 5000 as in Lecture 4 for this data
+bin_size_GC = 5000
+if(any(GC_5K > 1)) {
+  cat("Converting GC_5K to proportion...\n")
+  GC <- GC_5K / bin_size_GC
+} else {
+  cat("GC appears to be in proportion format.\n")
+  GC <- GC_5K # Rename for clarity
+}
+reads <- reads_5K # Rename for clarity
+
+# Create a data frame for easier use with ggplot and dplyr
+model_data <- data.frame(GC = GC, reads = reads)
+
+# --- Fit the B-spline regression model ---
+# Choose knot locations at quantiles (example: 25th, 50th, 75th percentiles)
+# Adjust knots/degree based on cross-validation in a real scenario
+gc_knots <- quantile(model_data$GC, c(0.25, 0.5, 0.75))
+cat("Using knots for B-spline at GC quantiles:", gc_knots, "\n")
+
+tic("Fitting B-spline model")
+bs_model <- lm(reads ~ bs(GC, knots = gc_knots, degree = 3), data = model_data)
+toc()
+
+# Get fitted values and residuals and add to the data frame
+model_data <- model_data %>%
+  mutate(fitted = predict(bs_model),
+         residuals = residuals(bs_model))
+
+# Calculate overall fit measures
+overall_rmse <- sqrt(mean(model_data$residuals^2, na.rm = TRUE)) # Added na.rm
+residual_se <- summary(bs_model)$sigma
+r_squared <- summary(bs_model)$r.squared
+
+cat(sprintf("\nOverall Model Fit:\n"))
+cat(sprintf(" Residual Standard Error (RMSE): %.2f\n", residual_se))
+cat(sprintf(" R-squared: %.4f\n", r_squared))
+
+
+# --- a. Present the fit plot (GC versus fit) and the trend line ---
+
+# Create prediction data for a smooth line
+pred_data <- data.frame(GC = seq(min(model_data$GC, na.rm = TRUE), max(model_data$GC, na.rm = TRUE), length.out = 500))
+pred_data$fitted <- predict(bs_model, newdata = pred_data)
+
+# Determine a reasonable y-axis limit to avoid extreme outliers distorting the view
+ylim_quantile <- quantile(model_data$reads, 0.995, na.rm = TRUE) # Added na.rm
+
+# Generate fit plot using ggplot2
+cat("\na. Generating GC vs Fitted Coverage plot...\n")
+ggplot(model_data, aes(x = GC, y = reads)) +
+  geom_point(alpha = 0.3, color = "gray50", size = 0.5) + # Use small, transparent points
+  geom_line(data = pred_data, aes(y = fitted), color = "red", linewidth = 1) +
+  labs(title = "B-spline Fit of Read Coverage vs GC Content",
+       x = "GC Content (Proportion)", y = "Read Coverage (Reads per 5kb Bin)") +
+  coord_cartesian(ylim = c(0, ylim_quantile)) + # Use coord_cartesian to zoom without removing data
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+
+
+# --- b. Present the residual plot (GC versus residuals). Are the residuals still dependent on the GC values? ---
+
+# Residual plot using ggplot2 with hex bins and loess smooth
+cat("\nb. Generating Residuals vs GC plot...\n")
+ggplot(model_data, aes(x = GC, y = residuals)) +
+  geom_hex(bins = 50) + # Visualize density of residuals
+  scale_fill_viridis_c(option = "plasma", name = "Count") + # Add color scale legend
+  geom_smooth(method = "loess", color = "red", se = FALSE, span = 0.1) + # Add loess smooth to show mean/median trend
+  geom_hline(yintercept = 0, lty = 2, color = "darkblue") + # Add line at zero
+  labs(title = "Residuals vs GC Content",
+       x = "GC Content (Proportion)", y = "Residuals (Observed - Fitted)") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+
+# Quantitative check for dependency: Correlation between residuals and GC
+# Residuals should ideally be uncorrelated with the predictor
+cat("\nQuantitative check for residual dependency on GC (Spearman correlation):\n")
+correlation_test <- cor.test(model_data$GC, model_data$residuals, method = "spearman")
+print(correlation_test)
+
+# --- c. Are there differences in the residual variance for different GC values? If so, how can this be characterized visually and numerically? ---
+
+# --- Characterize Residual Variance by GC Bin ---
+
+# Create GC quantile groups (e.g., 5 quintiles for roughly equal numbers of points per group)
+n_variance_groups <- 5
+model_data <- model_data %>%
+  mutate(gc_group = cut(GC, breaks = quantile(GC, probs = 0:n_variance_groups/n_variance_groups, na.rm = TRUE), # Added na.rm
+                         include.lowest = TRUE, labels = FALSE)) # Labels=FALSE gives bin numbers
+
+# Calculate variance and standard deviation of residuals within each GC bin
+# Filter out rows where gc_group might be NA (due to NA GC values if any)
+residual_variance_by_gc_group <- model_data %>%
+  filter(!is.na(gc_group)) %>%
+  group_by(gc_group) %>%
+  summarise(
+    Variance = var(residuals, na.rm = TRUE),
+    SD = sd(residuals, na.rm = TRUE),
+    IQR = IQR(residuals, na.rm = TRUE),
+    GC_Median = median(GC, na.rm = TRUE), # Median GC for plotting variance vs GC
+    N = n()
+  ) %>%
+  ungroup()
+
+# Present numerical results
+cat(sprintf("\nResidual Variance/SD/IQR by GC Quantile Group (%d groups):\n", n_variance_groups))
+print(residual_variance_by_gc_group)
+
+# Compute variance ratio for a single metric of heteroscedasticity
+# Filter out Inf or NA if a group had variance 0 or only 1 point
+variance_ratio <- max(residual_variance_by_gc_group$Variance, na.rm = TRUE) /
+                  min(residual_variance_by_gc_group$Variance, na.rm = TRUE)
+cat(sprintf("\nRatio of Max to Min Residual Variance across GC groups: %.2f\n", variance_ratio))
+
+# --- Additional Visual Characterization (Boxplot and Variance Plot) ---
+
+# Boxplot of residuals by GC group
+cat("\nc.1: Generating Boxplot of Residuals by GC Quantile Group...\n")
+ggplot(model_data %>% filter(!is.na(gc_group)), aes(x = factor(gc_group), y = residuals)) + # Filter NA groups
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  stat_summary(fun = var, geom = "point", color = "red", size = 3, shape = 19) + # Overlay variance points
+  labs(title = "Distribution and Variance of Residuals Across GC Quantile Groups",
+       x = paste("GC Content Quantile Group (1 to", n_variance_groups, ")"),
+       y = "Residuals") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+
+# Plot Variance vs GC Midpoint (or Median)
+cat("\nc.2: Generating Plot of Residual Variance vs GC Median per group...\n")
+ggplot(residual_variance_by_gc_group, aes(x = GC_Median, y = Variance)) +
+  geom_point(size = 3) +
+  geom_line() +
+  labs(title = "Residual Variance as a Function of GC Content",
+       x = "Median GC Content per Quantile Group",
+       y = "Residual Variance") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+
+# --- End of R Code ---
+```
