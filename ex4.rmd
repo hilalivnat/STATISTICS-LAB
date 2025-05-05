@@ -11,161 +11,366 @@ date: "2025-05-01"
 
 ---
 ```{r}
-# --- 0. Setup: Load Libraries and Data ---
-# Ensure necessary packages are installed:
-install.packages(c("splines", "ggplot2", "dplyr", "tictoc"))
-library(splines)
-library(ggplot2)
-library(dplyr) # For data manipulation like mutate and group_by
-library(tictoc) # For timing
+# ============================================================================
+#            Ex4: GC vs Coverage - Spline Regression & Residuals
+# ============================================================================
+# The code implements the analysis requested in Ex4, building upon Ex3.
+# It models the relationship between GC content and read coverage across
+# the entire chromosome 1 using spline regression and analyzes the residuals.
+# It uses the actual chromosome sequence from a Bioconductor BSgenome package.
+#
+# ============================================================================
 
-# Load the data (assuming the file path from Lecture 4)
-# NOTE: ADJUST THE FILE PATH!!!!!
-data_fname_5K = "reads_gc_5K.rda"
-if (!file.exists(data_fname_5K)) {
-    stop(paste("Error: Data file not found at path:", data_fname_5K,
-               "\nPlease ensure the file exists and the path is correct."))
+# --- 1. Setup: Load Libraries and Define Parameters ---
+
+# Load necessary libraries
+# Ensure these are installed: install.packages(c("data.table", "ggplot2", "dplyr", "splines", "BiocManager", "viridis"))
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+install.packages(c("data.table", "ggplot2", "dplyr", "splines", "BiocManager", "viridis"))
+BiocManager::install("BSgenome.Hsapiens.UCSC.hg19") # Or the appropriate genome build
+library(data.table)      # For fast data reading
+library(ggplot2)         # For plotting
+library(dplyr)           # For data manipulation
+library(splines)         # For bs() function (B-splines) or ns() (Natural Splines)
+library(BSgenome.Hsapiens.UCSC.hg19) # Human genome sequence (UCSC hg19 build)
+library(Biostrings)      # For sequence manipulation
+library(viridis)         # For color scales (e.g., if using geom_hex)
+
+cat("--- 1. Setup Complete ---\n")
+cat("Libraries loaded.\n")
+
+# Define Parameters
+reads_file <- 'TCGA-13-0723-10B_lib1_all_chr1.forward' # Provided reads file
+bin_size <- 10000        # Bin size in base pairs (consistent with Ex3)
+chromosome_name <- "chr1" # Chromosome to analyze
+num_df <- 6              # Initial degrees of freedom for the spline basis
+# Define quantiles for y-axis zooming and variance grouping
+ylim_quantile_prob <- 0.995 # Zoom fit plot y-axis to this quantile of coverage
+n_variance_groups <- 5      # Number of quantile groups for variance analysis
+
+cat(sprintf("Reads file: %s\n", reads_file))
+cat(sprintf("Bin size: %d bp\n", bin_size))
+cat(sprintf("Chromosome: %s\n", chromosome_name))
+cat(sprintf("Initial Spline df: %d\n", num_df))
+cat(sprintf("Fit plot y-axis limit quantile: %.3f\n", ylim_quantile_prob))
+cat(sprintf("Number of GC quantile groups for variance analysis: %d\n", n_variance_groups))
+
+
+# --- 2. Data Loading and Preparation ---
+
+cat("--- 2. Loading and Preparing Data ---\n")
+
+# Load Reads Data
+if (!file.exists(reads_file)) {
+  stop(sprintf("ERROR: Reads file not found at %s. Please ensure it's in the working directory or provide the full path.", reads_file))
 }
-load(data_fname_5K)
-
-# Ensure GC_5K is a proportion (check if max value is > 1, implying counts)
-# Assuming bin_size is 5000 as in Lecture 4 for this data
-bin_size_GC = 5000
-if(any(GC_5K > 1)) {
-  cat("Converting GC_5K to proportion...\n")
-  GC <- GC_5K / bin_size_GC
-} else {
-  cat("GC appears to be in proportion format.\n")
-  GC <- GC_5K # Rename for clarity
+chr1_reads <- fread(reads_file)
+colnames(chr1_reads) <- c("Chrom", "Loc", "FragLen")
+# Basic check on read locations
+if (max(chr1_reads$Loc, na.rm=TRUE) <= 0 || min(chr1_reads$Loc, na.rm=TRUE) < 0) {
+    warning("Read locations seem unusual (max <= 0 or min < 0). Check the input file.")
 }
-reads <- reads_5K # Rename for clarity
+cat(sprintf("Loaded %d reads from %s.\n", nrow(chr1_reads), reads_file))
 
-# Create a data frame for easier use with ggplot and dplyr
-model_data <- data.frame(GC = GC, reads = reads)
+# Get Chromosome Sequence and Length
+# if (!requireNamespace("BSgenome.Hsapiens.UCSC.hg19", quietly = TRUE)) {
+#     stop("BSgenome.Hsapiens.UCSC.hg19 package not found. Please install it using BiocManager.")
+# }
+genome <- BSgenome.Hsapiens.UCSC.hg19
+# if (!chromosome_name %in% seqnames(genome)) {
+#     stop(sprintf("Chromosome '%s' not found in the BSgenome.Hsapiens.UCSC.hg19 package. Available seqnames: %s",
+#                  chromosome_name, paste(seqnames(genome), collapse=", ")))
+# }
+chr1_seq <- genome[[chromosome_name]]
+chr1_length <- length(chr1_seq)
+cat(sprintf("Loaded %s sequence (length: %d bp) from BSgenome.Hsapiens.UCSC.hg19.\n", chromosome_name, chr1_length))
 
-# --- Fit the B-spline regression model ---
-# Choose knot locations at quantiles (example: 25th, 50th, 75th percentiles)
-# Adjust knots/degree based on cross-validation in a real scenario
-gc_knots <- quantile(model_data$GC, c(0.25, 0.5, 0.75))
-cat("Using knots for B-spline at GC quantiles:", gc_knots, "\n")
+# Calculate Total Number of Bins
+num_bins <- ceiling(chr1_length / bin_size)
+cat(sprintf("Total number of bins for %s: %d\n", chromosome_name, num_bins))
 
-tic("Fitting B-spline model")
-bs_model <- lm(reads ~ bs(GC, knots = gc_knots, degree = 3), data = model_data)
-toc()
+# --- 2a. Calculate Binned Coverage ---
+cat("Calculating binned coverage...\n")
+# Filter reads to be within chromosome bounds before binning
+chr1_reads <- chr1_reads[Loc > 0 & Loc <= chr1_length]
+bin_indices <- ceiling(chr1_reads$Loc / bin_size)
 
-# Get fitted values and residuals and add to the data frame
-model_data <- model_data %>%
-  mutate(fitted = predict(bs_model),
-         residuals = residuals(bs_model))
+# Tabulate reads per bin
+binned_coverage <- tabulate(bin_indices, nbins = num_bins)
+if(length(binned_coverage) != num_bins) {
+    warning(sprintf("Length of binned_coverage (%d) does not match expected num_bins (%d). Check calculation.", length(binned_coverage), num_bins))
+}
+cat(sprintf("Calculated coverage for %d bins.\n", length(binned_coverage)))
 
-# Calculate overall fit measures
-overall_rmse <- sqrt(mean(model_data$residuals^2, na.rm = TRUE)) # Added na.rm
-residual_se <- summary(bs_model)$sigma
-r_squared <- summary(bs_model)$r.squared
+# --- 2b. Calculate Binned GC Content ---
+cat("Calculating binned GC content using Biostrings...\n")
+bin_starts <- seq(1, chr1_length, by = bin_size)
+bin_ends <- pmin(bin_starts + bin_size - 1, chr1_length)
+chr_views <- Views(chr1_seq, start = bin_starts, end = bin_ends)
+bin_sequences <- DNAStringSet(chr_views)
+freq_matrix <- alphabetFrequency(bin_sequences, baseOnly = TRUE, collapse = FALSE)
 
-cat(sprintf("\nOverall Model Fit:\n"))
-cat(sprintf(" Residual Standard Error (RMSE): %.2f\n", residual_se))
-cat(sprintf(" R-squared: %.4f\n", r_squared))
+if(nrow(freq_matrix) != num_bins) {
+     warning(sprintf("Number of rows in frequency matrix (%d) does not match expected num_bins (%d). Check GC calculation.", nrow(freq_matrix), num_bins))
+}
+if (!all(c("G", "C") %in% colnames(freq_matrix))) {
+    stop("Columns 'G' and/or 'C' not found in alphabetFrequency output.")
+}
+gc_counts_per_bin <- freq_matrix[, "G"] + freq_matrix[, "C"]
+actual_bin_sizes <- width(bin_sequences)
+cat(sprintf("Calculated GC counts for %d bins.\n", length(gc_counts_per_bin)))
 
+# --- 2c. Combine Data and Filter ---
+cat("Combining and filtering data...\n")
+if (length(binned_coverage) != length(gc_counts_per_bin) || length(binned_coverage) != length(actual_bin_sizes)) {
+  stop("Mismatch in number of bins between coverage, GC counts, or bin sizes! Cannot proceed.")
+}
+combined_data <- data.frame(
+  bin_index = 1:num_bins,
+  gc_count = gc_counts_per_bin,
+  coverage_count = binned_coverage,
+  actual_bin_size = actual_bin_sizes
+)
+combined_data <- combined_data %>%
+  mutate(
+    gc_percentage = ifelse(actual_bin_size > 0, (gc_count / actual_bin_size) * 100, 0)
+  )
+cat(sprintf("Combined data frame created with %d rows.\n", nrow(combined_data)))
 
-# --- a. Present the fit plot (GC versus fit) and the trend line ---
+# Filtering
+original_rows <- nrow(combined_data)
+min_bin_size_threshold <- bin_size * 0.5 # Filter bins less than half the standard size
+gc_lower_threshold <- 10 # Filter GC < 10%
+gc_upper_threshold <- 90 # Filter GC > 90%
 
-# Create prediction data for a smooth line
-pred_data <- data.frame(GC = seq(min(model_data$GC, na.rm = TRUE), max(model_data$GC, na.rm = TRUE), length.out = 500))
-pred_data$fitted <- predict(bs_model, newdata = pred_data)
+filtered_data <- combined_data %>%
+  filter(coverage_count > 0,
+         actual_bin_size >= min_bin_size_threshold,
+         gc_percentage >= gc_lower_threshold,
+         gc_percentage <= gc_upper_threshold)
+filtered_rows <- nrow(filtered_data)
+cat(sprintf("Filtered data: Removed %d bins (%.1f%%) with 0 coverage, size < %.0f, or GC outside [%.0f%%, %.0f%%].\n",
+            original_rows - filtered_rows,
+            (original_rows - filtered_rows)/original_rows*100,
+            min_bin_size_threshold,
+            gc_lower_threshold,
+            gc_upper_threshold))
+cat(sprintf("Using %d bins for regression analysis.\n", filtered_rows))
 
-# Determine a reasonable y-axis limit to avoid extreme outliers distorting the view
-ylim_quantile <- quantile(model_data$reads, 0.995, na.rm = TRUE) # Added na.rm
+if (filtered_rows < num_df * 10) { # Need sufficient points for spline fitting
+    warning(sprintf("Low number of data points (%d) remaining after filtering for spline regression with df=%d. Model might be unstable.", filtered_rows, num_df))
+    if (filtered_rows < num_df + 2) {
+      stop("Insufficient data points to fit the spline model after filtering.")
+    }
+}
 
-# Generate fit plot using ggplot2
-cat("\na. Generating GC vs Fitted Coverage plot...\n")
-ggplot(model_data, aes(x = GC, y = reads)) +
-  geom_point(alpha = 0.3, color = "gray50", size = 0.5) + # Use small, transparent points
-  geom_line(data = pred_data, aes(y = fitted), color = "red", linewidth = 1) +
-  labs(title = "B-spline Fit of Read Coverage vs GC Content",
-       x = "GC Content (Proportion)", y = "Read Coverage (Reads per 5kb Bin)") +
-  coord_cartesian(ylim = c(0, ylim_quantile)) + # Use coord_cartesian to zoom without removing data
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+# --- 3. Spline Regression Modeling (Ex4 a, b) ---
 
+cat("--- 3. Fitting Spline Regression Model ---\n")
 
-# --- b. Present the residual plot (GC versus residuals). Are the residuals still dependent on the GC values? ---
+# --- 3a. Fit the Spline Model ---
+cat(sprintf("Fitting cubic spline regression (using bs with df = %d)...\n", num_df))
+spline_model <- tryCatch({
+    lm(coverage_count ~ bs(gc_percentage, df = num_df), data = filtered_data)
+}, error = function(e) {
+    cat("Error during spline model fitting:\n"); print(e); return(NULL)
+})
+if (is.null(spline_model)) { stop("Spline model fitting failed.") }
+cat("Spline model fitting complete.\n")
 
-# Residual plot using ggplot2 with hex bins and loess smooth
-cat("\nb. Generating Residuals vs GC plot...\n")
-ggplot(model_data, aes(x = GC, y = residuals)) +
-  geom_hex(bins = 50) + # Visualize density of residuals
-  scale_fill_viridis_c(option = "plasma", name = "Count") + # Add color scale legend
-  geom_smooth(method = "loess", color = "red", se = FALSE, span = 0.1) + # Add loess smooth to show mean/median trend
-  geom_hline(yintercept = 0, lty = 2, color = "darkblue") + # Add line at zero
-  labs(title = "Residuals vs GC Content",
-       x = "GC Content (Proportion)", y = "Residuals (Observed - Fitted)") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+# --- 3b. Calculate Predictions and Residuals ---
+cat("Calculating predictions and residuals...\n")
+filtered_data$predicted_coverage <- predict(spline_model, newdata = filtered_data)
+filtered_data$residuals <- residuals(spline_model)
 
-# Quantitative check for dependency: Correlation between residuals and GC
-# Residuals should ideally be uncorrelated with the predictor
+# --- 3c. Plotting: Scatter Plot with Spline Fit (Ex4 a) ---
+cat("Generating plot: GC vs Coverage with Spline Fit (Ex4 a)...\n")
+
+# Determine y-axis limit based on quantile for better visualization
+ylim_value <- quantile(filtered_data$coverage_count, probs = ylim_quantile_prob, na.rm = TRUE)
+
+plot_gc_vs_coverage_spline <- ggplot(filtered_data, aes(x = gc_percentage, y = coverage_count)) +
+  # Use geom_point with low alpha for dense data. Alternatively, use geom_hex:
+  # geom_hex(bins = 70) + scale_fill_viridis(option = "C") +
+  geom_point(alpha = 0.05, size = 1, color = "grey40") +
+  geom_line(aes(y = predicted_coverage), color = "red", linewidth = 1.2) +
+  # Use coord_cartesian to zoom y-axis without removing data points
+  coord_cartesian(ylim = c(0, ylim_value)) +
+  labs(
+    title = "GC Content vs. Read Coverage with Spline Fit",
+    subtitle = sprintf("%s, Bin Size=%d bp, Spline df=%d", chromosome_name, bin_size, num_df),
+    x = "GC Content (%)",
+    y = "Read Coverage (Fragments per Bin)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(plot_gc_vs_coverage_spline)
+cat("Plot (Ex4 a) generated.\n")
+
+# --- 3d. Plotting: Residual Plot (Ex4 b) ---
+cat("Generating plot: Residuals vs GC (Ex4 b)...\n")
+
+plot_residuals_vs_gc <- ggplot(filtered_data, aes(x = gc_percentage, y = residuals)) +
+  # Use geom_point with low alpha. Alternatively, use geom_hex:
+  geom_hex(bins = 70) + scale_fill_viridis(option = "plasma", name = "Bin Count") +
+  # geom_point(alpha = 0.05, size = 1, color = "grey40") +
+  geom_hline(yintercept = 0, color = "red", linetype = "dashed", linewidth = 1) +
+  geom_smooth(method = "loess", span = 0.5, color = "blue", se = FALSE, linewidth = 1) +
+  labs(
+    title = "Residuals vs. GC Content",
+    subtitle = "Checking for remaining bias after spline regression",
+    x = "GC Content (%)",
+    y = "Residuals (Observed - Predicted Coverage)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(plot_residuals_vs_gc)
+cat("Plot (Ex4 b) generated.\n")
+
+# --- 3e. Quantitative Check for Residual Dependency (Ex4 b extension) ---
 cat("\nQuantitative check for residual dependency on GC (Spearman correlation):\n")
-correlation_test <- cor.test(model_data$GC, model_data$residuals, method = "spearman")
-print(correlation_test)
+# Use Spearman for robustness to non-linearity in potential remaining dependency
+if (nrow(filtered_data) > 2) { # Need at least 3 points for correlation test
+    correlation_test <- cor.test(~ gc_percentage + residuals, data = filtered_data, method = "spearman", exact = FALSE) # exact=FALSE for speed with ties
+    print(correlation_test)
+    cat(sprintf("Spearman rho: %.3f, p-value: %.3g\n", correlation_test$estimate, correlation_test$p.value))
+    cat("Interpretation: A significant p-value (< 0.05) suggests residuals still show some monotonic dependency on GC,\n")
+    cat("implying the spline might need adjustment (e.g., more df) or other factors are involved.\n")
+} else {
+    cat("Skipping correlation test due to insufficient data points after filtering.\n")
+}
 
-# --- c. Are there differences in the residual variance for different GC values? If so, how can this be characterized visually and numerically? ---
 
-# --- Characterize Residual Variance by GC Bin ---
+# --- Interpretation of Residual Plot (Ex4 b) ---
+cat("\n--- Interpreting Residual Plot (Ex4 b) ---\n")
+cat("Examine the 'Residuals vs. GC Content' plot and correlation test:\n")
+cat("1. Bias Check: Does the blue LOESS line deviate systematically from the red dashed line (y=0)?\n")
+cat("   Does the Spearman correlation test show a significant p-value?\n")
+cat("   - If yes to either, it suggests the spline model (with current df) might not fully capture the mean relationship.\n")
+cat("   - Consider adjusting 'num_df' (increase if underfitting, decrease if overfitting/too wiggly).\n")
+cat("   - If LOESS is flat near zero and correlation is non-significant, the model captures the mean trend well.\n")
+cat("2. Variance Check (Preview for Ex4 c): Does the vertical spread (density in hex plot) change with GC%?\n")
 
-# Create GC quantile groups (e.g., 5 quintiles for roughly equal numbers of points per group)
-n_variance_groups <- 5
-model_data <- model_data %>%
-  mutate(gc_group = cut(GC, breaks = quantile(GC, probs = 0:n_variance_groups/n_variance_groups, na.rm = TRUE), # Added na.rm
-                         include.lowest = TRUE, labels = FALSE)) # Labels=FALSE gives bin numbers
+# --- 4. Residual Variance Analysis (Ex4 c) ---
 
-# Calculate variance and standard deviation of residuals within each GC bin
-# Filter out rows where gc_group might be NA (due to NA GC values if any)
-residual_variance_by_gc_group <- model_data %>%
-  filter(!is.na(gc_group)) %>%
+cat("\n--- 4. Analyzing Residual Variance (Ex4 c) ---\n")
+cat("Assessing if residual variance changes with GC content.\n")
+
+# --- 4a. Numerical Assessment using Quantile Groups ---
+cat("Grouping data into GC quantiles for variance analysis...\n")
+# Create GC quantile groups for roughly equal numbers of points per group
+filtered_data <- filtered_data %>%
+  mutate(gc_group = cut(gc_percentage,
+                        breaks = quantile(gc_percentage, probs = seq(0, 1, length.out = n_variance_groups + 1), na.rm = TRUE),
+                        include.lowest = TRUE,
+                        labels = FALSE)) # Labels=FALSE gives bin numbers 1 to n_variance_groups
+
+# Calculate summary statistics (Variance, SD, MAD, IQR) of residuals within each GC bin
+residual_variance_summary <- filtered_data %>%
+  filter(!is.na(gc_group)) %>% # Filter out rows where gc_group might be NA
   group_by(gc_group) %>%
   summarise(
-    Variance = var(residuals, na.rm = TRUE),
-    SD = sd(residuals, na.rm = TRUE),
-    IQR = IQR(residuals, na.rm = TRUE),
-    GC_Median = median(GC, na.rm = TRUE), # Median GC for plotting variance vs GC
-    N = n()
+    gc_median = median(gc_percentage, na.rm = TRUE), # Median GC for plotting
+    count = n(),
+    variance = var(residuals, na.rm = TRUE),
+    sd = sd(residuals, na.rm = TRUE),
+    mad = mad(residuals, na.rm = TRUE, constant = 1.4826), # Scaled MAD
+    iqr = IQR(residuals, na.rm = TRUE)
   ) %>%
-  ungroup()
+  ungroup() %>%
+  filter(count > 5) # Only keep groups with enough points for stable estimates
 
-# Present numerical results
-cat(sprintf("\nResidual Variance/SD/IQR by GC Quantile Group (%d groups):\n", n_variance_groups))
-print(residual_variance_by_gc_group)
+cat("Calculated summary statistics of residuals per GC quantile group:\n")
+print(residual_variance_summary)
 
-# Compute variance ratio for a single metric of heteroscedasticity
-# Filter out Inf or NA if a group had variance 0 or only 1 point
-variance_ratio <- max(residual_variance_by_gc_group$Variance, na.rm = TRUE) /
-                  min(residual_variance_by_gc_group$Variance, na.rm = TRUE)
-cat(sprintf("\nRatio of Max to Min Residual Variance across GC groups: %.2f\n", variance_ratio))
+# Calculate ratio of max to min variance (numerical indicator of heteroscedasticity)
+if(nrow(residual_variance_summary) > 1 && any(residual_variance_summary$variance > 0, na.rm=TRUE)) {
+    min_var <- min(residual_variance_summary$variance[residual_variance_summary$variance > 0], na.rm = TRUE) # Avoid zero variance
+    max_var <- max(residual_variance_summary$variance, na.rm = TRUE)
+    if (is.finite(min_var) && is.finite(max_var) && min_var > 0) {
+        variance_ratio <- max_var / min_var
+        cat(sprintf("\nRatio of Max to Min Residual Variance across GC groups: %.2f\n", variance_ratio))
+        cat("(A ratio significantly > 1 suggests heteroscedasticity)\n")
+    } else {
+        cat("\nCould not calculate variance ratio (min variance non-positive or non-finite values found).\n")
+    }
+} else {
+    cat("\nNot enough groups with positive variance to calculate variance ratio.\n")
+}
 
-# --- Additional Visual Characterization (Boxplot and Variance Plot) ---
 
-# Boxplot of residuals by GC group
-cat("\nc.1: Generating Boxplot of Residuals by GC Quantile Group...\n")
-ggplot(model_data %>% filter(!is.na(gc_group)), aes(x = factor(gc_group), y = residuals)) + # Filter NA groups
-  geom_boxplot(fill = "lightblue", alpha = 0.7) +
-  stat_summary(fun = var, geom = "point", color = "red", size = 3, shape = 19) + # Overlay variance points
-  labs(title = "Distribution and Variance of Residuals Across GC Quantile Groups",
+# --- 4b. Visual Assessment: Boxplot of Residuals by GC Group ---
+cat("Generating plot: Boxplot of Residuals by GC Quantile Group (Ex4 c.1)...\n")
+
+plot_boxplot_res_vs_gc_group <- ggplot(filtered_data %>% filter(!is.na(gc_group)), aes(x = factor(gc_group), y = residuals)) +
+  geom_boxplot(fill = "lightblue", outlier.shape = NA, alpha = 0.8) + # Hide outliers for clarity, focus on IQR/median
+  coord_cartesian(ylim = quantile(filtered_data$residuals, c(0.01, 0.99), na.rm=TRUE)) + # Zoom y-axis
+  labs(title = "Distribution of Residuals Across GC Quantile Groups",
        x = paste("GC Content Quantile Group (1 to", n_variance_groups, ")"),
        y = "Residuals") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
 
-# Plot Variance vs GC Midpoint (or Median)
-cat("\nc.2: Generating Plot of Residual Variance vs GC Median per group...\n")
-ggplot(residual_variance_by_gc_group, aes(x = GC_Median, y = Variance)) +
-  geom_point(size = 3) +
-  geom_line() +
-  labs(title = "Residual Variance as a Function of GC Content",
-       x = "Median GC Content per Quantile Group",
-       y = "Residual Variance") +
-  theme_minimal() +
-  theme(plot.title = element_text(hjust = 0.5)) # Center plot title
+print(plot_boxplot_res_vs_gc_group)
+cat("Plot (Ex4 c.1) generated.\n")
+
+
+# --- 4c. Visual Assessment: Variance/SD/MAD Plot vs. GC ---
+cat("Generating plot: Residual SD vs. GC Median per group (Ex4 c.2)...\n")
+
+plot_sd_vs_gc <- ggplot(residual_variance_summary, aes(x = gc_median, y = sd)) +
+  geom_point(aes(size = count), alpha = 0.7, color = "navy") +
+  geom_line(color = "navy", alpha = 0.5) +
+  geom_smooth(method = "loess", color = "orange", se = FALSE, linewidth = 1) +
+  scale_size_continuous(range = c(3, 10)) +
+  labs(
+    title = "Residual Standard Deviation vs. GC Content",
+    subtitle = "Checking for Heteroscedasticity",
+    x = "Median GC Content (%) in Quantile Group",
+    y = "Standard Deviation of Residuals",
+    size = "Bins in Group"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(plot_sd_vs_gc)
+
+# Plot MAD vs GC for a more robust view of spread
+cat("Generating plot: Residual MAD vs. GC Median per group (Robust alternative - Ex4 c.3)...\n")
+plot_mad_vs_gc <- ggplot(residual_variance_summary, aes(x = gc_median, y = mad)) +
+    geom_point(aes(size = count), alpha = 0.7, color = "darkgreen") +
+    geom_line(color = "darkgreen", alpha = 0.5) +
+    geom_smooth(method = "loess", color = "orange", se = FALSE, linewidth = 1) +
+    scale_size_continuous(range = c(3, 10)) +
+    labs(
+        title = "Residual MAD vs. GC Content (Robust)",
+        subtitle = "Checking for Heteroscedasticity using Median Absolute Deviation",
+        x = "Median GC Content (%) in Quantile Group",
+        y = "MAD of Residuals (Scaled)",
+        size = "Bins in Group"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+          plot.subtitle = element_text(hjust = 0.5))
+
+print(plot_mad_vs_gc)
+cat("Plots (Ex4 c.2, c.3) generated.\n")
+
+# --- Interpretation of Residual Variance Analysis (Ex4 c) ---
+cat("\n--- Interpreting Residual Variance Analysis (Ex4 c) ---\n")
+cat("Examine the boxplot, the SD/MAD vs. GC plots, and the variance ratio:\n")
+cat("- Boxplot: Do the boxes (IQRs) or whiskers change size across groups? Wider boxes indicate higher variance.\n")
+cat("- SD/MAD vs. GC plots: Is there a clear trend (upward, downward, U-shape)? A non-flat trend indicates heteroscedasticity.\n")
+cat("- Variance Ratio: Is the ratio significantly larger than 1? (e.g., > 3 or 5 might be considered notable).\n")
+cat("- Conclusion: Combine visual and numerical evidence. If variance clearly changes with GC, the assumption of homoscedasticity is violated.\n")
+cat("  This affects the reliability of standard errors/p-values from the 'lm' fit but doesn't invalidate the spline for describing the mean trend.\n")
+
+cat("\n--- Ex4 Analysis Complete ---\n")
 
 # --- End of R Code ---
 ```
